@@ -19,8 +19,8 @@
 #define LED_R       4
 #define BUZZER_PIN  5
 #define SWITCH_PIN  6
-#define LED_G       7
 #define LED_B       10
+// GPIO7's green channel is intentionally unused because the LED is faulty.
 
 #define LED_BRIGHTNESS 80
 
@@ -130,8 +130,21 @@ struct SystemData {
   bool error = false;
 };
 
+const uint8_t GRAPH_POINTS = 24;
+
+struct GraphHistory {
+  int8_t values[GRAPH_POINTS] = {};
+  uint8_t count = 0;
+  uint8_t next = 0;
+};
+
 AIData ai;
 SystemData sys;
+GraphHistory cpuHistory;
+GraphHistory ramHistory;
+GraphHistory gpuHistory;
+GraphHistory fiveHourHistory;
+GraphHistory weeklyHistory;
 
 // =====================================================
 // STATE
@@ -160,7 +173,7 @@ unsigned long lastDisplayUpdate = 0;
 
 const unsigned long DEBOUNCE_DELAY = 40;
 const unsigned long REFRESH_TIMEOUT = 5000;
-const size_t SERIAL_BUFFER_LIMIT = 300;
+const size_t SERIAL_BUFFER_LIMIT = 160;
 const int LOW_QUOTA_THRESHOLD = 15;
 
 // AI is only updated about once/minute.
@@ -176,90 +189,26 @@ bool serialLineOverflow = false;
 // RGB
 // =====================================================
 
-void setRGB(
-  uint8_t r,
-  uint8_t g,
-  uint8_t b
-) {
-
-  ledcWrite(LED_R, r);
-  ledcWrite(LED_G, g);
-  ledcWrite(LED_B, b);
+void setRedBlue(uint8_t red, uint8_t blue) {
+  ledcWrite(LED_R, red);
+  ledcWrite(LED_B, blue);
 }
 
 void ledOff() {
-
-  setRGB(0, 0, 0);
+  setRedBlue(0, 0);
 }
 
-// =====================================================
-// AI RGB LANGUAGE
-//
-// GREEN = connected
-// BLUE  = busy
-// RED   = error
-// =====================================================
-
-void aiGreen() {
-
-  setRGB(
-    0,
-    LED_BRIGHTNESS,
-    0
-  );
+// Available RGB outputs: blue = normal, red+blue = busy, red = error.
+void statusNormal() {
+  setRedBlue(0, LED_BRIGHTNESS);
 }
 
-void aiBlue() {
-
-  setRGB(
-    0,
-    0,
-    LED_BRIGHTNESS
-  );
+void statusBusy() {
+  setRedBlue(LED_BRIGHTNESS, LED_BRIGHTNESS);
 }
 
-void aiRed() {
-
-  setRGB(
-    LED_BRIGHTNESS,
-    0,
-    0
-  );
-}
-
-// =====================================================
-// SYSTEM RGB LANGUAGE
-//
-// GB = connected = cyan
-// BR = busy      = magenta
-// RG = error     = yellow
-// =====================================================
-
-void systemGB() {
-
-  setRGB(
-    0,
-    LED_BRIGHTNESS,
-    LED_BRIGHTNESS
-  );
-}
-
-void systemBR() {
-
-  setRGB(
-    LED_BRIGHTNESS,
-    0,
-    LED_BRIGHTNESS
-  );
-}
-
-void systemRG() {
-
-  setRGB(
-    LED_BRIGHTNESS,
-    LED_BRIGHTNESS,
-    0
-  );
+void statusError() {
+  setRedBlue(LED_BRIGHTNESS, 0);
 }
 
 // =====================================================
@@ -416,66 +365,130 @@ int currentStatus() {
 // =====================================================
 
 void updateStatusLED() {
-
-  int status =
-    currentStatus();
-
-if (aiMode) {
-
-    if (status == STATUS_NORMAL)
-      aiGreen();
-
-    else if (status == STATUS_BUSY)
-      aiBlue();
-
-    else
-      aiRed();
-
-  }
-
-  else {
-
-    if (status == STATUS_NORMAL)
-      systemGB();
-
-    else if (status == STATUS_BUSY)
-      systemBR();
-
-    else
-      systemRG();
-  }
+  const int status = currentStatus();
+  if (status == STATUS_NORMAL)
+    statusNormal();
+  else if (status == STATUS_BUSY)
+    statusBusy();
+  else
+    statusError();
 }
 
 // =====================================================
 // SERIAL PARSER
 // =====================================================
 
-String getField(
-  const String &line,
-  const String &key
-) {
+bool hasField(const String &line, const String &key) {
+  return line.indexOf("|" + key + "=") >= 0;
+}
 
-  String pattern =
-    "|" + key + "=";
+bool readField(const String &line, const String &key, String &value) {
+  const String pattern = "|" + key + "=";
+  const int patternStart = line.indexOf(pattern);
+  if (patternStart < 0)
+    return false;
 
-  int start =
-    line.indexOf(pattern);
+  // Duplicate fields are ambiguous; discard the whole packet instead.
+  if (line.indexOf(pattern, patternStart + pattern.length()) >= 0)
+    return false;
 
-  if (start < 0)
-    return "";
+  const int valueStart = patternStart + pattern.length();
+  int valueEnd = line.indexOf('|', valueStart);
+  if (valueEnd < 0)
+    valueEnd = line.length();
 
-  start += pattern.length();
+  const int valueLength = valueEnd - valueStart;
+  if (valueLength < 1 || valueLength > 20)
+    return false;
 
-  int end =
-    line.indexOf('|', start);
+  for (int i = valueStart; i < valueEnd; ++i) {
+    const uint8_t character = static_cast<uint8_t>(line[i]);
+    if (character < 32 || character > 126)
+      return false;
+  }
 
-  if (end < 0)
-    end = line.length();
+  value = line.substring(valueStart, valueEnd);
+  return true;
+}
 
-  return line.substring(
-    start,
-    end
-  );
+bool validPercent(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 3)
+    return false;
+
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] < '0' || value[i] > '9')
+      return false;
+  }
+
+  const int parsed = value.toInt();
+  return parsed >= 0 && parsed <= 100;
+}
+
+void appendSample(GraphHistory &history, const String &value) {
+  const int sample = value == "--" ? -1 : value.toInt();
+  history.values[history.next] = static_cast<int8_t>(sample);
+  history.next = (history.next + 1) % GRAPH_POINTS;
+  if (history.count < GRAPH_POINTS)
+    ++history.count;
+}
+
+bool validTemperature(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 3)
+    return false;
+
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] < '0' || value[i] > '9')
+      return false;
+  }
+
+  const int parsed = value.toInt();
+  return parsed >= 0 && parsed <= 150;
+}
+
+bool validTokenLabel(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 12)
+    return false;
+
+  bool hasDigit = false;
+  bool hasDecimal = false;
+  bool hasSuffix = false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char character = value[i];
+    if (character >= '0' && character <= '9' && !hasSuffix) {
+      hasDigit = true;
+    } else if (character == '.' && !hasDecimal && !hasSuffix) {
+      hasDecimal = true;
+    } else if ((character == 'K' || character == 'M' || character == 'B')
+               && !hasSuffix && i == value.length() - 1) {
+      hasSuffix = true;
+    } else {
+      return false;
+    }
+  }
+  return hasDigit && (!hasDecimal || hasSuffix);
+}
+
+bool validResetLabel(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 12)
+    return false;
+
+  bool hasDigit = false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char character = value[i];
+    if (character >= '0' && character <= '9')
+      hasDigit = true;
+    else if (character != 'd' && character != 'h' && character != 'm')
+      return false;
+  }
+  return hasDigit;
 }
 
 // =====================================================
@@ -489,11 +502,15 @@ String getField(
 void handleSerialLine(
   String line
 ) {
-
   line.trim();
-
-  if (!line.length())
+  if (!line.length() || line.length() > SERIAL_BUFFER_LIMIT)
     return;
+
+  for (size_t i = 0; i < line.length(); ++i) {
+    const uint8_t character = static_cast<uint8_t>(line[i]);
+    if (character < 32 || character > 126)
+      return;
+  }
 
 // -----------------------------------------
   // Connectivity
@@ -510,57 +527,45 @@ void handleSerialLine(
   // AI DATA
   // -----------------------------------------
 
-  if (
-    line.startsWith("AI|")
-  ) {
+  if (line.startsWith("AI|")) {
+    String today, lifetime, fiveHour, weekly, fiveReset, weekReset;
+    const bool hasToday = hasField(line, "TODAY");
+    const bool hasLifetime = hasField(line, "LIFE");
+    const bool hasFiveHour = hasField(line, "H5");
+    const bool hasWeekly = hasField(line, "WEEK");
+    const bool hasFiveReset = hasField(line, "H5R");
+    const bool hasWeekReset = hasField(line, "WR");
 
-    String value;
+    // Validate the complete packet before changing any live values.
+    if (hasToday && (!readField(line, "TODAY", today) || !validTokenLabel(today))) return;
+    if (hasLifetime && (!readField(line, "LIFE", lifetime) || !validTokenLabel(lifetime))) return;
+    if (hasFiveHour && (!readField(line, "H5", fiveHour) || !validPercent(fiveHour))) return;
+    if (hasWeekly && (!readField(line, "WEEK", weekly) || !validPercent(weekly))) return;
+    if (hasFiveReset && (!readField(line, "H5R", fiveReset) || !validResetLabel(fiveReset))) return;
+    if (hasWeekReset && (!readField(line, "WR", weekReset) || !validResetLabel(weekReset))) return;
 
-value =
-      getField(line, "TODAY");
+    const bool updated = hasToday || hasLifetime || hasFiveHour || hasWeekly || hasFiveReset || hasWeekReset;
+    if (!updated)
+      return;
 
-    if (value.length())
-      ai.today = value;
+    if (hasToday) ai.today = today;
+    if (hasLifetime) ai.lifetime = lifetime;
+    if (hasFiveHour) {
+      ai.fiveHour = fiveHour;
+      appendSample(fiveHourHistory, fiveHour);
+    }
+    if (hasWeekly) {
+      ai.weekly = weekly;
+      appendSample(weeklyHistory, weekly);
+    }
+    if (hasFiveReset) ai.fiveReset = fiveReset;
+    if (hasWeekReset) ai.weekReset = weekReset;
 
-value =
-      getField(line, "LIFE");
-
-    if (value.length())
-      ai.lifetime = value;
-
-value =
-      getField(line, "H5");
-
-    if (value.length())
-      ai.fiveHour = value;
-
-value =
-      getField(line, "WEEK");
-
-    if (value.length())
-      ai.weekly = value;
-
-value =
-      getField(line, "H5R");
-
-    if (value.length())
-      ai.fiveReset = value;
-
-value =
-      getField(line, "WR");
-
-    if (value.length())
-      ai.weekReset = value;
-
-ai.lastRx = millis();
-
+    ai.lastRx = millis();
     ai.error = false;
-
-if (aiMode)
+    if (aiMode)
       waitingRefresh = false;
-
-updateStatusLED();
-
+    updateStatusLED();
     return;
   }
 
@@ -568,45 +573,42 @@ updateStatusLED();
   // SYSTEM DATA
   // -----------------------------------------
 
-  if (
-    line.startsWith("SYS|")
-  ) {
+  if (line.startsWith("SYS|")) {
+    String cpu, gpu, ram, temperature;
+    const bool hasCpu = hasField(line, "CPU");
+    const bool hasGpu = hasField(line, "GPU");
+    const bool hasRam = hasField(line, "RAM");
+    const bool hasTemperature = hasField(line, "TEMP");
 
-    String value;
+    // Keep updates atomic so a malformed trailing value cannot partly apply.
+    if (hasCpu && (!readField(line, "CPU", cpu) || !validPercent(cpu))) return;
+    if (hasGpu && (!readField(line, "GPU", gpu) || !validPercent(gpu))) return;
+    if (hasRam && (!readField(line, "RAM", ram) || !validPercent(ram))) return;
+    if (hasTemperature && (!readField(line, "TEMP", temperature) || !validTemperature(temperature))) return;
 
-value =
-      getField(line, "CPU");
+    const bool updated = hasCpu || hasGpu || hasRam || hasTemperature;
+    if (!updated)
+      return;
 
-    if (value.length())
-      sys.cpu = value;
+    if (hasCpu) {
+      sys.cpu = cpu;
+      appendSample(cpuHistory, cpu);
+    }
+    if (hasGpu) {
+      sys.gpu = gpu;
+      appendSample(gpuHistory, gpu);
+    }
+    if (hasRam) {
+      sys.ram = ram;
+      appendSample(ramHistory, ram);
+    }
+    if (hasTemperature) sys.gpuTemp = temperature;
 
-value =
-      getField(line, "GPU");
-
-    if (value.length())
-      sys.gpu = value;
-
-value =
-      getField(line, "RAM");
-
-    if (value.length())
-      sys.ram = value;
-
-value =
-      getField(line, "TEMP");
-
-    if (value.length())
-      sys.gpuTemp = value;
-
-sys.lastRx = millis();
-
+    sys.lastRx = millis();
     sys.error = false;
-
-if (!aiMode)
+    if (!aiMode)
       waitingRefresh = false;
-
-updateStatusLED();
-
+    updateStatusLED();
     return;
   }
 
@@ -667,6 +669,13 @@ void updateSerial() {
     if (c == '\r' || serialLineOverflow)
       continue;
 
+    if (c < 32 || c > 126) {
+      // Protocol is ASCII; discard malformed input through its newline.
+      serialBuffer = "";
+      serialLineOverflow = true;
+      continue;
+    }
+
     if (serialBuffer.length() < SERIAL_BUFFER_LIMIT) {
       serialBuffer += c;
     } else {
@@ -685,28 +694,68 @@ int percentValue(const String &value) {
   if (value.length() == 0 || value == "--")
     return -1;
 
+  if (value.length() > 3)
+    return -1;
+
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] < '0' || value[i] > '9')
+      return -1;
+  }
+
   const int parsed = value.toInt();
   if (parsed < 0 || parsed > 100)
     return -1;
-
-  // Reject non-numeric values that String::toInt() would turn into zero.
-  if (parsed == 0 && value[0] != '0')
-    return -1;
-
   return parsed;
 }
 
-void drawProgressBar(int x, int y, int width, int height, int percent) {
+void drawLineChart(const GraphHistory &history, int x, int y, int width, int height) {
   oled.drawFrame(x, y, width, height);
 
-  if (percent < 0) {
-    oled.drawHLine(x + 3, y + (height / 2), width - 6);
+  if (width < 8 || height < 6)
+    return;
+
+  const int plotLeft = x + 2;
+  const int plotRight = x + width - 3;
+  const int plotTop = y + 2;
+  const int plotBottom = y + height - 3;
+  const int plotHeight = plotBottom - plotTop;
+
+  // Light dotted guides make the trend legible without turning the chart into a bar.
+  for (int guide = 1; guide <= 2; ++guide) {
+    const int guideY = plotTop + (plotHeight * guide) / 3;
+    for (int guideX = plotLeft + 2; guideX < plotRight; guideX += 5)
+      oled.drawPixel(guideX, guideY);
+  }
+
+  if (!history.count) {
+    oled.drawHLine(plotLeft + 2, plotTop + plotHeight / 2, plotRight - plotLeft - 3);
     return;
   }
 
-  const int fillWidth = ((width - 4) * percent) / 100;
-  if (fillWidth > 0)
-    oled.drawBox(x + 2, y + 2, fillWidth, height - 4);
+  int previousX = -1;
+  int previousY = -1;
+  for (uint8_t point = 0; point < history.count; ++point) {
+    const uint8_t index = (history.next + GRAPH_POINTS - history.count + point) % GRAPH_POINTS;
+    const int value = history.values[index];
+    if (value < 0 || value > 100) {
+      previousX = -1;
+      previousY = -1;
+      continue;
+    }
+
+    const int span = history.count > 1 ? history.count - 1 : 1;
+    const int px = plotLeft + ((plotRight - plotLeft) * point) / span;
+    const int py = plotBottom - (plotHeight * value) / 100;
+    if (previousX >= 0)
+      oled.drawLine(previousX, previousY, px, py);
+    else
+      oled.drawDisc(px, py, 1);
+
+    if (point == history.count - 1)
+      oled.drawDisc(px, py, 1);
+    previousX = px;
+    previousY = py;
+  }
 }
 
 void drawBigValue(const String &value, int baseline) {
@@ -719,15 +768,24 @@ void drawBigValue(const String &value, int baseline) {
   oled.setFont(u8g2_font_6x10_tf);
 }
 
+void drawCentered(const char *text, int baseline) {
+  const int width = oled.getStrWidth(text);
+  oled.drawStr((128 - width) / 2, baseline, text);
+}
+
 void drawHeader() {
   const bool connected = aiMode ? aiConnected() : systemConnected();
+  const char *statusText = waitingRefresh ? "BUSY" : (connected ? "LIVE" : "WAIT");
 
   oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0, 10, "QUARK");
+  // Tiny header-safe Q mark: ring plus a short tail.
+  oled.drawCircle(6, 6, 4);
+  oled.drawLine(8, 8, 12, 12);
+  oled.drawStr(14, 10, "QUARK");
 
-  oled.drawBox(46, 1, 24, 13);
+  oled.drawBox(51, 1, 23, 12);
   oled.setDrawColor(0);
-  oled.drawStr(49, 10, aiMode ? "AI" : "SYS");
+  oled.drawStr(aiMode ? 58 : 54, 10, aiMode ? "AI" : "SYS");
   oled.setDrawColor(1);
 
   if (connected)
@@ -735,32 +793,35 @@ void drawHeader() {
   else
     oled.drawCircle(80, 6, 2);
 
-  oled.drawStr(86, 10, connected ? "LIVE" : "WAIT");
-
-  char pageLabel[6];
-  snprintf(pageLabel, sizeof(pageLabel), "%d/%d", page + 1, totalPages);
-  oled.drawStr(110, 10, pageLabel);
+  oled.drawStr(85, 10, statusText);
+  for (int i = 0; i < totalPages; ++i) {
+    const int x = 110 + i * 4;
+    if (i == page)
+      oled.drawBox(x, 4, 3, 3);
+    else
+      oled.drawFrame(x, 4, 3, 3);
+  }
   oled.drawHLine(0, 14, 128);
 }
 
-void drawMiniMetric(const char *label, const String &value, int y) {
+void drawMiniChart(const char *label, const String &value, const GraphHistory &history, int x) {
   const int percent = percentValue(value);
-  String displayValue = value;
-  if (percent < 0)
-    displayValue = "--";
-  else
-    displayValue += "%";
-
+  const String displayValue = percent < 0 ? String("--") : String(value + "%");
+  oled.drawFrame(x, 19, 62, 43);
   oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0, y + 7, label);
-  drawProgressBar(29, y, 65, 8, percent);
-  oled.drawStr(98, y + 7, displayValue.c_str());
+  oled.drawStr(x + 5, 29, label);
+  const int valueWidth = oled.getStrWidth(displayValue.c_str());
+  oled.drawStr(x + 57 - valueWidth, 29, displayValue.c_str());
+  drawLineChart(history, x + 4, 33, 54, 24);
 }
 
-void drawPercentPage(
+void drawMetricPage(
   const char *title,
   const String &value,
-  const String &footer
+  const GraphHistory &history,
+  const char *sideLabel,
+  const String &sideValue,
+  bool lowWarning
 ) {
   const int percent = percentValue(value);
   String displayValue = value;
@@ -769,30 +830,34 @@ void drawPercentPage(
   else
     displayValue += "%";
 
+  if (lowWarning) {
+    oled.drawBox(0, 17, 128, 12);
+    oled.setDrawColor(0);
+  }
   oled.setFont(u8g2_font_6x12_tf);
-  oled.drawStr(0, 27, title);
+  oled.drawStr(2, 26, title);
+  oled.setDrawColor(1);
 
-  drawBigValue(displayValue, 47);
-  drawProgressBar(2, 50, 124, 8, percent);
-
-  if (footer.length()) {
+  drawBigValue(displayValue, 43);
+  if (sideLabel[0]) {
+    drawLineChart(history, 2, 47, 77, 14);
     oled.setFont(u8g2_font_6x10_tf);
-    oled.drawStr(0, 63, footer.c_str());
+    oled.drawStr(86, 51, sideLabel);
+    oled.drawStr(86, 62, sideValue.c_str());
+  } else {
+    drawLineChart(history, 2, 47, 124, 15);
   }
 }
 
 void drawQuotaPage(
   const char *title,
   const String &value,
-  const String &reset
+  const String &reset,
+  const GraphHistory &history
 ) {
   const int percent = percentValue(value);
-  String footer = "RESET  " + reset;
-
-  if (percent >= 0 && percent <= LOW_QUOTA_THRESHOLD)
-    footer = "LOW  " + footer;
-
-  drawPercentPage(title, value, footer);
+  const bool lowWarning = percent >= 0 && percent <= LOW_QUOTA_THRESHOLD;
+  drawMetricPage(title, value, history, "RESET", reset.length() ? reset : String("--"), lowWarning);
 }
 
 void drawTokenPage(
@@ -802,67 +867,100 @@ void drawTokenPage(
   const String &footerValue
 ) {
   oled.setFont(u8g2_font_6x12_tf);
-  oled.drawStr(0, 27, title);
+  oled.drawStr(0, 25, title);
 
-  drawBigValue(value, 49);
+  drawBigValue(value, 48);
 
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 63, footerLabel);
   oled.drawStr(54, 63, footerValue.c_str());
 }
 
+void drawAIOverview() {
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(0, 24, "TOKENS TODAY");
+  drawBigValue(ai.today, 44);
+
+  const int fiveHour = percentValue(ai.fiveHour);
+  const int weekly = percentValue(ai.weekly);
+  const String fiveLabel = fiveHour < 0 ? String("--") : String(ai.fiveHour + "%");
+  const String weekLabel = weekly < 0 ? String("--") : String(ai.weekly + "%");
+
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(0, 55, "5H");
+  drawLineChart(fiveHourHistory, 20, 48, 67, 8);
+  oled.drawStr(94, 55, fiveLabel.c_str());
+  oled.drawStr(0, 63, "WK");
+  drawLineChart(weeklyHistory, 20, 56, 67, 8);
+  oled.drawStr(94, 63, weekLabel.c_str());
+}
+
+void drawSystemOverview() {
+  drawMiniChart("CPU", sys.cpu, cpuHistory, 1);
+  drawMiniChart("RAM", sys.ram, ramHistory, 65);
+}
+
+void drawOfflineScreen(bool codexUnavailable) {
+  oled.setFont(u8g2_font_6x12_tf);
+  drawCentered(codexUnavailable ? "CODEX OFFLINE" : "PC OFFLINE", 32);
+  oled.drawHLine(22, 37, 84);
+  oled.setFont(u8g2_font_6x10_tf);
+  drawCentered(codexUnavailable ? "No usage data" : "Waiting for QUARK", 48);
+  drawCentered(codexUnavailable ? "Check Codex login" : "companion...", 59);
+}
+
 void drawDisplay() {
   oled.clearBuffer();
   drawHeader();
 
+  const bool connected = aiMode ? aiConnected() : systemConnected();
+  if (!connected) {
+    drawOfflineScreen(aiMode && systemConnected());
+    oled.sendBuffer();
+    return;
+  }
+
   if (aiMode) {
     switch (page) {
       case 0:
-        drawTokenPage("TOKENS TODAY", ai.today, "LIFETIME", ai.lifetime);
+        drawAIOverview();
         break;
 
       case 1:
-        drawTokenPage("LIFETIME TOKENS", ai.lifetime, "TODAY", ai.today);
+        drawTokenPage("TOKENS TODAY", ai.today, "LIFETIME", ai.lifetime);
         break;
 
       case 2: {
-        drawQuotaPage("5-HOUR LEFT", ai.fiveHour, ai.fiveReset);
+        drawQuotaPage("5-HOUR LEFT", ai.fiveHour, ai.fiveReset, fiveHourHistory);
         break;
       }
 
       case 3: {
-        drawQuotaPage("WEEKLY LEFT", ai.weekly, ai.weekReset);
+        drawQuotaPage("WEEKLY LEFT", ai.weekly, ai.weekReset, weeklyHistory);
         break;
       }
     }
   } else {
     switch (page) {
       case 0: {
-        oled.setFont(u8g2_font_6x12_tf);
-        oled.drawStr(0, 26, "SYSTEM LOAD");
-
-        drawMiniMetric("CPU", sys.cpu, 29);
-        drawMiniMetric("GPU", sys.gpu, 40);
-        drawMiniMetric("RAM", sys.ram, 51);
-
-        oled.setFont(u8g2_font_6x10_tf);
-        const String temperature = "GPU TEMP  " + sys.gpuTemp + " C";
-        oled.drawStr(0, 63, temperature.c_str());
+        drawSystemOverview();
         break;
       }
 
       case 1:
-        drawPercentPage("CPU LOAD", sys.cpu, "PROCESSOR");
+        drawMetricPage("CPU LOAD", sys.cpu, cpuHistory, "", String(""), false);
         break;
 
       case 2: {
-        const String temperature = "TEMP  " + sys.gpuTemp + " C";
-        drawPercentPage("GPU LOAD", sys.gpu, temperature);
+        const String temperature = sys.gpuTemp == "--"
+          ? String("--")
+          : String(sys.gpuTemp + "C");
+        drawMetricPage("GPU LOAD", sys.gpu, gpuHistory, "TEMP", temperature, false);
         break;
       }
 
       case 3:
-        drawPercentPage("RAM USED", sys.ram, "MEMORY");
+        drawMetricPage("RAM USED", sys.ram, ramHistory, "", String(""), false);
         break;
     }
   }
@@ -907,111 +1005,37 @@ void updateMode() {
 // =====================================================
 
 void updateButton() {
+  const bool reading = digitalRead(BUTTON_PIN);
+  const unsigned long now = millis();
 
-  bool reading =
-    digitalRead(BUTTON_PIN);
-
-if (
-    reading != lastButtonState
-  ) {
-
-    lastDebounce =
-      millis();
+  if (reading != lastButtonState) {
+    lastButtonState = reading;
+    lastDebounce = now;
   }
 
-if (
-    millis() - lastDebounce
-    >
-    DEBOUNCE_DELAY
-  ) {
+  if (now - lastDebounce < DEBOUNCE_DELAY || reading == buttonState)
+    return;
 
-    if (
-      reading != buttonState
-    ) {
-
-      buttonState =
-        reading;
-
-// BUTTON DOWN
-      if (
-        buttonState == LOW
-      ) {
-
-        pressStart =
-          millis();
-
-      }
-
-// BUTTON RELEASE
-      else {
-
-        unsigned long held =
-          millis()
-          -
-          pressStart;
-
-// ---------------------------------------------
-        // LONG PRESS = REFRESH
-        // ---------------------------------------------
-
-        if (
-          held >= 800
-        ) {
-
-          waitingRefresh = true;
-
-          refreshStarted =
-            millis();
-
-updateStatusLED();
-
-toneFor(
-            2600,
-            70,
-            0
-          );
-
-if (aiMode) {
-
-            Serial.println(
-              "REFRESH|AI"
-            );
-
-          }
-
-          else {
-
-            Serial.println(
-              "REFRESH|SYS"
-            );
-          }
-        }
-
-// ---------------------------------------------
-        // SHORT PRESS = NEXT SCREEN
-        // ---------------------------------------------
-
-        else {
-
-          page =
-            (page + 1)
-            %
-            totalPages;
-
-toneFor(
-            2100,
-            25,
-            0
-          );
-
-drawDisplay();
-        }
-      }
-    }
+  buttonState = reading;
+  if (buttonState == LOW) {
+    pressStart = now;
+    return;
   }
 
-lastButtonState =
-    reading;
+  // Select exactly one action after the debounced release.
+  const unsigned long held = now - pressStart;
+  if (held >= 800) {
+    waitingRefresh = true;
+    refreshStarted = now;
+    updateStatusLED();
+    toneFor(2600, 70, 0);
+    Serial.println(aiMode ? "REFRESH|AI" : "REFRESH|SYS");
+    return;
+  }
+
+  page = (page + 1) % totalPages;
+  toneFor(2100, 25, 0);
+  drawDisplay();
 }
 
 // =====================================================
@@ -1038,12 +1062,6 @@ pinMode(
 
   ledcAttach(
     LED_R,
-    5000,
-    8
-  );
-
-ledcAttach(
-    LED_G,
     5000,
     8
   );
