@@ -5,6 +5,12 @@ import quark
 
 
 class FormattingTests(unittest.TestCase):
+    def test_codex_retry_backoff_is_bounded(self):
+        self.assertEqual(quark.retry_delay(0), 5)
+        self.assertEqual(quark.retry_delay(1), 5)
+        self.assertEqual(quark.retry_delay(3), 20)
+        self.assertEqual(quark.retry_delay(100), quark.CODEX_RETRY_MAX)
+
     def test_compact_token_counts(self):
         self.assertEqual(quark.compact_tokens(999), "999")
         self.assertEqual(quark.compact_tokens(18_432), "18.4K")

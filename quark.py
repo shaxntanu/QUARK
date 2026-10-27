@@ -1,4 +1,8 @@
+import argparse
+import ctypes
 import json
+import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 import queue
@@ -10,6 +14,7 @@ import threading
 import time
 from collections.abc import Mapping
 from datetime import date
+from pathlib import Path
 
 import psutil
 import serial
@@ -35,6 +40,106 @@ SYSTEM_INTERVAL = 2.0
 
 # Don't hammer the Codex backend.
 CODEX_INTERVAL = 60.0
+CODEX_RPC_TIMEOUT = 15.0
+CODEX_RETRY_BASE = 5.0
+CODEX_RETRY_MAX = 60.0
+CODEX_MIN_REFRESH_INTERVAL = 5.0
+AI_HEARTBEAT_INTERVAL = 60.0
+SERIAL_MAX_LINE = 160
+FIRMWARE_HANDSHAKE_RETRY = 30.0
+
+logger = logging.getLogger("quark")
+
+
+def log_directory():
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "QUARK"
+    return Path.home() / ".local" / "share" / "QUARK"
+
+
+def setup_logging():
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    if logger.handlers:
+        return
+    try:
+        directory = log_directory()
+        directory.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            directory / "quark.log",
+            maxBytes=1_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    except OSError:
+        pass
+    if sys.stderr is not None:
+        console = logging.StreamHandler(sys.stderr)
+        console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        logger.addHandler(console)
+    if not logger.handlers:
+        logger.addHandler(logging.NullHandler())
+
+
+def retry_delay(attempt, base=CODEX_RETRY_BASE, maximum=CODEX_RETRY_MAX):
+    try:
+        exponent = max(0, int(attempt) - 1)
+        return min(float(maximum), float(base) * (2 ** exponent))
+    except (TypeError, ValueError, OverflowError):
+        return float(maximum)
+
+
+def _no_window_creation_flags():
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
+
+def resolve_codex_executable():
+    candidates = []
+    found = shutil.which("codex")
+    if found:
+        candidates.append(found)
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["where.exe", "codex"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                creationflags=_no_window_creation_flags(),
+                check=False,
+            )
+            candidates.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+        app_data = os.environ.get("APPDATA")
+        if app_data:
+            npm = Path(app_data) / "npm"
+            candidates.extend(str(npm / name) for name in ("codex.cmd", "codex.exe", "codex.ps1"))
+
+    unique = list(dict.fromkeys(candidates))
+    supported = [path for path in unique if Path(path).suffix.lower() != ".ps1"]
+    for candidate in supported + [path for path in unique if path not in supported]:
+        if Path(candidate).exists() or shutil.which(candidate):
+            return candidate
+    return None
+
+
+def codex_command(executable, *arguments):
+    extension = Path(executable).suffix.lower()
+    if os.name == "nt" and extension in {".cmd", ".bat"}:
+        shell = os.environ.get("COMSPEC", "cmd.exe")
+        return [shell, "/d", "/c", "call", executable, *arguments]
+    if os.name == "nt" and extension == ".ps1":
+        powershell = shutil.which("powershell.exe") or "powershell.exe"
+        return [powershell, "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", executable, *arguments]
+    return [executable, *arguments]
 
 
 # ============================================================
@@ -210,80 +315,60 @@ def parse_esp_command(line):
 # ESP32 SERIAL PORT DISCOVERY
 # ============================================================
 
-def find_quark_port():
-
-    ports = list(
-        list_ports.comports()
-    )
-
-    # Manual override
-    if PORT:
-
-        return PORT
-
-
-    candidates = []
-
-    for port in ports:
-
-        description = (
-            port.description or ""
-        ).lower()
-
-        hwid = (
-            port.hwid or ""
-        ).lower()
+def list_ports_info():
+    ports = []
+    for port in list_ports.comports():
+        description = port.description or ""
+        hwid = port.hwid or ""
+        search = f"{description} {hwid}".lower()
+        candidate = port.vid == 0x303A or any(
+            token in search for token in ("espressif", "esp32", "usb jtag", "usb serial")
+        )
+        ports.append({
+            "device": port.device,
+            "description": description,
+            "hwid": hwid,
+            "vid": port.vid,
+            "pid": port.pid,
+            "candidate": candidate,
+        })
+    return ports
 
 
-        # Espressif USB VID
-        if port.vid == 0x303A:
-
-            candidates.append(
-                port.device
-            )
-
-            continue
-
-
-        if (
-            "espressif" in description
-            or
-            "usb jtag" in description
-            or
-            "esp32" in description
-            or
-            "espressif" in hwid
-        ):
-
-            candidates.append(
-                port.device
-            )
+def _probe_quark_port(device_name, timeout=4.0):
+    deadline = time.monotonic() + timeout
+    try:
+        with serial.Serial(device_name, BAUD, timeout=0.1, write_timeout=0.5) as device:
+            while time.monotonic() < deadline:
+                device.write(b"PING\n")
+                device.flush()
+                raw = device.readline()
+                if raw.endswith(b"\n") and len(raw) <= SERIAL_MAX_LINE:
+                    command = parse_esp_command(raw.decode("utf-8", errors="ignore"))
+                    if command in {"PONG", "QUARK|READY"}:
+                        return True
+                time.sleep(0.15)
+    except (SerialException, OSError):
+        return False
+    return False
 
 
-    candidates = list(
-        dict.fromkeys(candidates)
-    )
+def find_quark_port(port_override=None):
+    override = port_override or PORT
+    if override:
+        return override
 
-
+    candidates = [port for port in list_ports_info() if port["candidate"]]
     if len(candidates) == 1:
-
-        return candidates[0]
-
-
+        return candidates[0]["device"]
     if len(candidates) > 1:
-
-        print(
-            "Multiple ESP ports found:",
-            candidates
-        )
-
-        print(
-            "Set PORT = \"COMx\" at the top of quark.py."
-        )
-
-        return None
-
-
+        matches = [port["device"] for port in candidates if _probe_quark_port(port["device"])]
+        if len(matches) == 1:
+            return matches[0]
+        if matches:
+            logger.warning("Multiple QUARK devices answered the serial handshake: %s", matches)
+        else:
+            logger.info("No ESP candidate answered the QUARK handshake")
     return None
 
 
@@ -292,71 +377,41 @@ def find_quark_port():
 # ============================================================
 
 def get_nvidia_stats():
-    executable = shutil.which(
-        "nvidia-smi"
-    )
-
+    executable = shutil.which("nvidia-smi")
     if executable is None:
-
         return "--", "--"
 
-
     try:
-
-        command = [
-            executable,
-            "--query-gpu=utilization.gpu,temperature.gpu",
-            "--format=csv,noheader,nounits"
-        ]
-
-
-        creation_flags = 0
-
-        if os.name == "nt":
-            creation_flags = subprocess.CREATE_NO_WINDOW
-
-
-        output = subprocess.check_output(
-            command,
+        result = subprocess.run(
+            [
+                executable,
+                "--query-gpu=utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
             text=True,
-            timeout=3,
-            creationflags=creation_flags
+            timeout=2,
+            creationflags=_no_window_creation_flags(),
+            check=False,
         )
-
-
-        # If there are multiple GPUs, the parser uses the first row.
-        return parse_nvidia_smi_output(output)
-
-
-    except Exception:
-
+        if result.returncode != 0:
+            logger.debug("nvidia-smi returned %s", result.returncode)
+            return "--", "--"
+        return parse_nvidia_smi_output(result.stdout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.debug("NVIDIA telemetry unavailable: %s", exc)
         return "--", "--"
 
 
 def get_system_data():
-
-    cpu = round(
-        psutil.cpu_percent(
-            interval=0.15
-        )
-    )
-
-
-    ram = round(
-        psutil.virtual_memory().percent
-    )
-
-
-    gpu, temp = (
-        get_nvidia_stats()
-    )
-
-
+    cpu = round(psutil.cpu_percent(interval=0.15))
+    ram = round(psutil.virtual_memory().percent)
+    gpu, temp = get_nvidia_stats()
     return {
         "cpu": str(cpu),
         "ram": str(ram),
-        "gpu": str(gpu),
-        "temp": str(temp)
+        "gpu": gpu,
+        "temp": temp,
     }
 
 
@@ -365,357 +420,168 @@ def get_system_data():
 # ============================================================
 
 class CodexAppServer:
-
     def __init__(self):
-
         self.process = None
-
-        self.messages = (
-            queue.Queue()
-        )
-
+        self.messages = queue.Queue()
         self.request_id = 1
-
-
-    # --------------------------------------------------------
-    # START
-    # --------------------------------------------------------
+        self.rpc_lock = threading.Lock()
+        self.start_lock = threading.Lock()
+        self.write_lock = threading.Lock()
+        self.initialized = False
+        self.failures = 0
+        self.last_start_attempt = 0.0
 
     def start(self):
+        with self.start_lock:
+            if self.process is not None and self.process.poll() is None and self.initialized:
+                return
 
-        codex = shutil.which(
-            "codex"
-        )
+            now = time.monotonic()
+            wait_for = retry_delay(self.failures) - (now - self.last_start_attempt)
+            if self.failures and wait_for > 0:
+                raise RuntimeError(f"Codex CLI retrying in {wait_for:.0f}s")
 
+            self.last_start_attempt = now
+            executable = resolve_codex_executable()
+            if executable is None:
+                self.failures += 1
+                raise RuntimeError("Codex CLI was not found in PATH or %APPDATA%\\npm")
 
-        if codex is None:
-
-            raise RuntimeError(
-                "Codex CLI not found in PATH."
-            )
-
-
-        # npm installs on Windows can resolve to codex.cmd.
-        # subprocess needs cmd.exe for .cmd / .bat.
-
-        if (
-            os.name == "nt"
-            and
-            codex.lower().endswith(
-                (".cmd", ".bat")
-            )
-        ):
-
-            command = [
-                "cmd",
-                "/c",
-                codex,
-                "app-server"
-            ]
-
-        else:
-
-            command = [
-                codex,
-                "app-server"
-            ]
-
-
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1
-        )
-
-
-        threading.Thread(
-            target=self._stdout_reader,
-            daemon=True
-        ).start()
-
-
-        threading.Thread(
-            target=self._stderr_reader,
-            daemon=True
-        ).start()
-
-
-        result = self.rpc(
-            "initialize",
-            {
-                "clientInfo": {
-                    "name": "quark",
-                    "title": "QUARK",
-                    "version": "1.0.0"
-                }
-            },
-            timeout=15
-        )
-
-
-        self.notify(
-            "initialized"
-        )
-
-
-        print(
-            "[CODEX] App Server initialized"
-        )
-
-
-    # --------------------------------------------------------
-    # STDOUT JSON READER
-    # --------------------------------------------------------
-
-    def _stdout_reader(self):
-
-        for raw_line in self.process.stdout:
-
-            line = raw_line.strip()
-
-            if not line:
-                continue
-
-
+            self.stop()
             try:
-
-                message = json.loads(
-                    line
+                self.messages = queue.Queue()
+                command = codex_command(executable, "app-server")
+                self.process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    creationflags=_no_window_creation_flags(),
                 )
+                process = self.process
+                threading.Thread(
+                    target=self._stdout_reader,
+                    args=(process,),
+                    name="QUARK-Codex-stdout",
+                    daemon=True,
+                ).start()
+                threading.Thread(
+                    target=self._stderr_reader,
+                    args=(process,),
+                    name="QUARK-Codex-stderr",
+                    daemon=True,
+                ).start()
 
-                self.messages.put(
-                    message
+                self._rpc_raw(
+                    "initialize",
+                    {
+                        "clientInfo": {
+                            "name": "quark",
+                            "title": "QUARK",
+                            "version": "1.1.0",
+                        }
+                    },
+                    timeout=CODEX_RPC_TIMEOUT,
                 )
+                self._send({"method": "initialized"})
+                self.initialized = True
+                self.failures = 0
+                logger.info("Codex App Server initialized")
+            except Exception:
+                self.failures += 1
+                self.stop()
+                raise
 
+    def _stdout_reader(self, process):
+        try:
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    self.messages.put(json.loads(line))
+                except json.JSONDecodeError:
+                    logger.debug("Ignoring non-JSON Codex output: %s", line[:300])
+        except (OSError, ValueError) as exc:
+            logger.debug("Codex stdout reader stopped: %s", exc)
 
-            except json.JSONDecodeError:
-
-                print(
-                    "[CODEX RAW]",
-                    line
-                )
-
-
-    # --------------------------------------------------------
-    # STDERR READER
-    # --------------------------------------------------------
-
-    def _stderr_reader(self):
-
-        for raw_line in self.process.stderr:
-
-            line = raw_line.strip()
-
-            if line:
-
-                print(
-                    "[CODEX]",
-                    line,
-                    file=sys.stderr
-                )
-
-
-    # --------------------------------------------------------
-    # SEND
-    # --------------------------------------------------------
+    def _stderr_reader(self, process):
+        try:
+            for raw_line in process.stderr:
+                line = raw_line.strip()
+                if line:
+                    logger.info("Codex: %s", line[:500])
+        except (OSError, ValueError) as exc:
+            logger.debug("Codex stderr reader stopped: %s", exc)
 
     def _send(self, message):
+        process = self.process
+        if process is None or process.poll() is not None or process.stdin is None:
+            raise RuntimeError("Codex App Server is not running")
 
-        if (
-            self.process is None
-            or
-            self.process.poll() is not None
-        ):
+        with self.write_lock:
+            process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+            process.stdin.flush()
 
-            raise RuntimeError(
-                "Codex App Server is not running."
-            )
+    def _rpc_raw(self, method, params=None, timeout=CODEX_RPC_TIMEOUT):
+        with self.rpc_lock:
+            request_id = self.request_id
+            self.request_id += 1
+            message = {"id": request_id, "method": method}
+            if params is not None:
+                message["params"] = params
+            self._send(message)
 
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"Codex RPC timed out: {method}")
+                try:
+                    response = self.messages.get(timeout=remaining)
+                except queue.Empty as exc:
+                    raise TimeoutError(f"Codex RPC timed out: {method}") from exc
 
-        self.process.stdin.write(
-            json.dumps(message)
-            + "\n"
-        )
+                if not isinstance(response, dict) or response.get("id") != request_id:
+                    continue
+                if "error" in response:
+                    raise RuntimeError(f"{method}: {response['error']}")
+                return response.get("result", {})
 
-
-        self.process.stdin.flush()
-
-
-    # --------------------------------------------------------
-    # NOTIFICATION
-    # --------------------------------------------------------
-
-    def notify(
-        self,
-        method,
-        params=None
-    ):
-
-        message = {
-            "method": method
-        }
-
-
-        if params is not None:
-
-            message["params"] = (
-                params
-            )
-
-
-        self._send(
-            message
-        )
-
-
-    # --------------------------------------------------------
-    # RPC
-    # --------------------------------------------------------
-
-    def rpc(
-        self,
-        method,
-        params=None,
-        timeout=15
-    ):
-
-        request_id = (
-            self.request_id
-        )
-
-
-        self.request_id += 1
-
-
-        message = {
-            "id": request_id,
-            "method": method
-        }
-
-
-        if params is not None:
-
-            message["params"] = (
-                params
-            )
-
-
-        self._send(
-            message
-        )
-
-
-        deadline = (
-            time.monotonic()
-            +
-            timeout
-        )
-
-
-        while True:
-
-            remaining = (
-                deadline
-                -
-                time.monotonic()
-            )
-
-
-            if remaining <= 0:
-
-                raise TimeoutError(
-                    f"Codex RPC timeout: {method}"
-                )
-
-
-            try:
-
-                response = (
-                    self.messages.get(
-                        timeout=remaining
-                    )
-                )
-
-
-            except queue.Empty:
-
-                raise TimeoutError(
-                    f"Codex RPC timeout: {method}"
-                )
-
-
-            # Notifications may appear between replies.
-
-            if (
-                response.get("id")
-                !=
-                request_id
-            ):
-
-                continue
-
-
-            if "error" in response:
-
-                raise RuntimeError(
-                    f"{method}: "
-                    f"{response['error']}"
-                )
-
-
-            return response.get(
-                "result",
-                {}
-            )
-
-
-    # --------------------------------------------------------
-    # ACCOUNT TOKEN USAGE
-    # --------------------------------------------------------
+    def rpc(self, method, params=None, timeout=CODEX_RPC_TIMEOUT):
+        self.start()
+        return self._rpc_raw(method, params, timeout)
 
     def get_token_usage(self):
-
-        return self.rpc(
-            "account/usage/read",
-            timeout=15
-        )
-
-
-    # --------------------------------------------------------
-    # ACCOUNT RATE LIMITS
-    # --------------------------------------------------------
+        return self.rpc("account/usage/read")
 
     def get_rate_limits(self):
-
-        return self.rpc(
-            "account/rateLimits/read",
-            timeout=15
-        )
-
-
-    # --------------------------------------------------------
-    # STOP
-    # --------------------------------------------------------
+        return self.rpc("account/rateLimits/read")
 
     def stop(self):
-
-        if self.process is None:
+        self.initialized = False
+        process = self.process
+        self.process = None
+        if process is None:
             return
-
-
         try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            logger.debug("Error stopping Codex App Server", exc_info=True)
 
-            self.process.terminate()
 
-        except Exception:
-
-            pass
-
+class FirmwareHandshakeError(SerialException):
+    """An ESP32 serial device is present, but its firmware isn't ready for QUARK."""
 
 # ============================================================
 # CODEX DATA PARSING
@@ -938,389 +804,243 @@ def get_codex_data(
 # SERIAL OUTPUT
 # ============================================================
 
-def send_line(
-    device,
-    line
-):
-
-    message = (
-        line
-        +
-        "\n"
-    ).encode(
-        "utf-8"
-    )
-
-
-    device.write(
-        message
-    )
-
-
+def send_line(device, line):
+    message = (str(line) + "\n").encode("ascii", errors="strict")
+    if len(message) > SERIAL_MAX_LINE:
+        raise ValueError("Serial packet exceeds the firmware line limit")
+    device.write(message)
     device.flush()
+
+
+# ============================================================
+# CODEX POLLING
+# ============================================================
+
+def codex_poll_worker(codex, state, state_lock, refresh_event, stop_event):
+    last_attempt = 0.0
+    while not stop_event.is_set():
+        now = time.monotonic()
+        wait_time = max(0.0, CODEX_INTERVAL - (now - last_attempt))
+        refresh_event.wait(wait_time)
+        if stop_event.is_set():
+            return
+        refresh_event.clear()
+
+        cooldown = max(0.0, CODEX_MIN_REFRESH_INTERVAL - (time.monotonic() - last_attempt))
+        if cooldown and stop_event.wait(cooldown):
+            return
+
+        last_attempt = time.monotonic()
+        try:
+            data = get_codex_data(codex)
+            error = None
+        except Exception as exc:
+            data = None
+            error = str(exc)
+            logger.warning("Codex data unavailable: %s", exc)
+
+        with state_lock:
+            state["data"] = data
+            state["error"] = error
+            state["version"] += 1
+            state["updated"] = time.monotonic()
+
+
+def wait_for_device_handshake(device, port, timeout=8.0):
+    deadline = time.monotonic() + timeout
+    next_ping = 0.0
+    last_write_error = None
+    while time.monotonic() < deadline:
+        while device.in_waiting:
+            raw = device.read_until(b"\n", SERIAL_MAX_LINE + 1)
+            if len(raw) > SERIAL_MAX_LINE or not raw.endswith(b"\n"):
+                continue
+            command = parse_esp_command(raw.decode("ascii", errors="ignore"))
+            if command == "PONG":
+                logger.info("QUARK firmware handshake succeeded on %s", port)
+                return
+            if command == "QUARK|READY":
+                logger.info("QUARK firmware booted on %s", port)
+
+        now = time.monotonic()
+        if now >= next_ping:
+            try:
+                send_line(device, "PING")
+                last_write_error = None
+            except SerialException as exc:
+                last_write_error = str(exc)
+            next_ping = now + 0.5
+        time.sleep(0.05)
+
+    detail = f"; serial write error: {last_write_error}" if last_write_error else ""
+    raise FirmwareHandshakeError(
+        f"No QUARK PONG received on {port}{detail}. Check USB CDC On Boot and the flashed firmware."
+    )
 
 
 # ============================================================
 # RUN QUARK DEVICE
 # ============================================================
 
-def run_device(
-    port,
-    codex
-):
-
-    print(
-        f"[QUARK] Connecting to {port}"
-    )
-
-
+def run_device(port, ai_state, ai_state_lock, refresh_event):
+    logger.info("Connecting to QUARK on %s", port)
     with serial.Serial(
         port,
         BAUD,
-        timeout=0.05,
-        write_timeout=2
+        timeout=0.1,
+        write_timeout=0.5,
     ) as device:
-
-
-        # Opening CDC may reset the ESP.
-        # Let logo + boot sound finish.
-
+        # Opening USB CDC may reset the ESP32-C3.
         time.sleep(3.5)
+        wait_for_device_handshake(device, port)
+        logger.info("QUARK connected on %s", port)
 
-
-        print(
-            "[QUARK] Connected"
-        )
-
-
-        next_system = 0
-        next_codex = 0
-
-
+        next_system = 0.0
+        last_ai_version = -1
         while True:
+            now = time.monotonic()
 
-            now = (
-                time.monotonic()
-            )
-
-
-            # ============================================
-            # READ COMMANDS FROM ESP32
-            # ============================================
-
+            # Drain serial commands without allowing an oversized line to grow unbounded.
             while device.in_waiting:
-
-                raw = (
-                    device.readline()
-                )
-
-
-                try:
-
-                    line = (
-                        raw
-                        .decode(
-                            "utf-8",
-                            errors="ignore"
-                        )
-                        .strip()
-                    )
-
-                except Exception:
-
-                    line = ""
-
-
-                if not line:
+                raw = device.read_until(b"\n", SERIAL_MAX_LINE + 1)
+                if len(raw) > SERIAL_MAX_LINE or not raw.endswith(b"\n"):
+                    logger.warning("Dropped malformed or oversized serial input")
                     continue
+                command = parse_esp_command(raw.decode("ascii", errors="ignore"))
+                if command is None:
+                    continue
+                logger.info("ESP command: %s", command)
+                if command in {"REFRESH|AI", "MODE|AI"}:
+                    refresh_event.set()
+                elif command in {"REFRESH|SYS", "MODE|SYS"}:
+                    next_system = 0.0
 
-
-                print(
-                    "[ESP]",
-                    line
-                )
-
-
-                if (
-                    line == "REFRESH|AI"
-                    or
-                    line == "MODE|AI"
-                ):
-
-                    next_codex = 0
-
-
-                elif (
-                    line == "REFRESH|SYS"
-                    or
-                    line == "MODE|SYS"
-                ):
-
-                    next_system = 0
-
-
-            # ============================================
-            # SYSTEM DATA
-            # ============================================
-
-            if (
-                now >= next_system
-            ):
-
+            if now >= next_system:
                 try:
-
-                    data = (
-                        get_system_data()
-                    )
-
-
-                    line = (
-                        f"SYS"
-                        f"|CPU={data['cpu']}"
-                        f"|GPU={data['gpu']}"
-                        f"|RAM={data['ram']}"
-                        f"|TEMP={data['temp']}"
-                    )
-
-
-                    send_line(
-                        device,
-                        line
-                    )
-
-
-                    print(
-                        "[SYSTEM]",
-                        line
-                    )
-
-
+                    packet = format_system_packet(get_system_data())
+                    send_line(device, packet)
+                    logger.debug("System packet: %s", packet)
+                except (SerialException, OSError):
+                    raise
                 except Exception as exc:
+                    logger.exception("System telemetry update failed: %s", exc)
+                    send_line(device, "ERR|SYS")
+                next_system = now + SYSTEM_INTERVAL
 
-                    print(
-                        "[SYSTEM ERROR]",
-                        exc
-                    )
+            with ai_state_lock:
+                version = ai_state["version"]
+                data = ai_state["data"]
+                error = ai_state["error"]
 
+            if version != last_ai_version:
+                if data is not None:
+                    send_line(device, format_ai_packet(data))
+                elif error is not None:
+                    send_line(device, "ERR|AI")
+                last_ai_version = version
 
-                    send_line(
-                        device,
-                        "ERR|SYS"
-                    )
-
-
-                next_system = (
-                    now
-                    +
-                    SYSTEM_INTERVAL
-                )
-
-
-            # ============================================
-            # CODEX DATA
-            # ============================================
-
-            if (
-                now >= next_codex
-            ):
-
-                if codex is None:
-
-                    send_line(
-                        device,
-                        "ERR|AI"
-                    )
+            time.sleep(0.05)
 
 
-                else:
+# ============================================================
+# SINGLE INSTANCE
+# ============================================================
 
-                    try:
-
-                        data = (
-                            get_codex_data(
-                                codex
-                            )
-                        )
-
-
-                        line = (
-                            f"AI"
-                            f"|TODAY={data['today']}"
-                            f"|LIFE={data['lifetime']}"
-                            f"|H5={data['five_remaining']}"
-                            f"|WEEK={data['weekly_remaining']}"
-                            f"|H5R={data['five_reset']}"
-                            f"|WR={data['weekly_reset']}"
-                        )
-
-
-                        send_line(
-                            device,
-                            line
-                        )
-
-
-                        print(
-                            "[AI]",
-                            line
-                        )
-
-
-                    except Exception as exc:
-
-                        print(
-                            "[AI ERROR]",
-                            exc
-                        )
-
-
-                        send_line(
-                            device,
-                            "ERR|AI"
-                        )
-
-
-                next_codex = (
-                    now
-                    +
-                    CODEX_INTERVAL
-                )
-
-
-            time.sleep(
-                0.05
-            )
+def acquire_single_instance():
+    if os.name != "nt":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, "Local\\QUARK.Companion")
+    if not handle:
+        raise OSError("Could not create the QUARK single-instance mutex")
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+    return handle
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="QUARK Windows companion")
+    parser.add_argument("--port", help="use a specific serial port, such as COM7")
+    parser.add_argument("--list-ports", action="store_true", help="show detected serial ports and exit")
+    parser.add_argument("--self-test", action="store_true", help="check telemetry and local dependencies")
+    parser.add_argument("--version", action="version", version="QUARK Companion 1.1.0")
+    args = parser.parse_args(argv)
 
-    print()
-    print("==========================")
-    print(" QUARK Companion")
-    print("==========================")
-    print()
+    setup_logging()
+    logger.info("QUARK Companion starting")
 
+    if args.list_ports:
+        print(json.dumps(list_ports_info(), indent=2))
+        return 0
 
-    # ================================================
-    # START CODEX APP SERVER
-    # ================================================
+    if args.self_test:
+        ports = list_ports_info()
+        telemetry = get_system_data()
+        logger.info("Python runtime: %s", sys.version.split()[0])
+        logger.info("Codex CLI: %s", resolve_codex_executable() or "not found (AI mode unavailable)")
+        logger.info("Serial ports: %s", ports or "none detected")
+        logger.info("System telemetry: %s", telemetry)
+        return 0
 
-    codex = None
+    mutex = acquire_single_instance()
+    if mutex is False:
+        logger.info("Another QUARK Companion instance is already running")
+        return 0
 
-
-    try:
-
-        codex = (
-            CodexAppServer()
-        )
-
-
-        codex.start()
-
-
-    except Exception as exc:
-
-        print(
-            "[CODEX ERROR]",
-            exc
-        )
-
-
-        print(
-            "System monitoring will still work."
-        )
-
-
-        print(
-            "AI mode will remain red until Codex works."
-        )
-
-
-        codex = None
-
-
-    # ================================================
-    # SERIAL RECONNECT LOOP
-    # ================================================
+    codex = CodexAppServer()
+    ai_state = {"data": None, "error": None, "version": 0, "updated": 0.0}
+    ai_state_lock = threading.Lock()
+    refresh_event = threading.Event()
+    stop_event = threading.Event()
+    worker = threading.Thread(
+        target=codex_poll_worker,
+        args=(codex, ai_state, ai_state_lock, refresh_event, stop_event),
+        name="QUARK-Codex-poller",
+        daemon=True,
+    )
+    worker.start()
 
     try:
-
+        port_override = args.port or PORT
+        last_missing_log = 0.0
         while True:
-
-            port = (
-                find_quark_port()
-            )
-
-
+            port = find_quark_port(port_override)
             if port is None:
-
-                print(
-                    "[QUARK] ESP32-C3 not found. "
-                    "Retrying..."
-                )
-
-
-                time.sleep(
-                    2
-                )
-
-
+                now = time.monotonic()
+                if now - last_missing_log >= 30:
+                    logger.info("No ESP32-C3 serial device found; waiting for USB connection")
+                    last_missing_log = now
+                time.sleep(2)
                 continue
 
-
             try:
-
-                run_device(
-                    port,
-                    codex
-                )
-
-
-            except SerialException as exc:
-
-                print(
-                    "[QUARK] Disconnected:",
-                    exc
-                )
-
-
-                time.sleep(
-                    2
-                )
-
-
-            except OSError as exc:
-
-                print(
-                    "[QUARK] USB error:",
-                    exc
-                )
-
-
-                time.sleep(
-                    2
-                )
-
-
+                run_device(port, ai_state, ai_state_lock, refresh_event)
+            except FirmwareHandshakeError as exc:
+                logger.warning("%s; retrying in %.0fs", exc, FIRMWARE_HANDSHAKE_RETRY)
+                time.sleep(FIRMWARE_HANDSHAKE_RETRY)
+            except (SerialException, OSError) as exc:
+                logger.warning("QUARK disconnected from %s: %s", port, exc)
+                time.sleep(2)
+            except KeyboardInterrupt:
+                raise
+            except Exception:
+                logger.exception("Unexpected QUARK connection error")
+                time.sleep(2)
     except KeyboardInterrupt:
-
-        print()
-        print(
-            "Stopping QUARK..."
-        )
-
-
+        logger.info("Stopping QUARK Companion")
+        return 0
     finally:
-
-        if codex:
-
-            codex.stop()
+        stop_event.set()
+        refresh_event.set()
+        codex.stop()
+        if mutex and mutex is not False and os.name == "nt":
+            ctypes.windll.kernel32.CloseHandle(mutex)
 
 
 if __name__ == "__main__":
-
-    main()
+    raise SystemExit(main())
