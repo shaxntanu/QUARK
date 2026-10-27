@@ -1,11 +1,14 @@
 import json
+import math
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from datetime import date
 
 import psutil
@@ -39,17 +42,22 @@ CODEX_INTERVAL = 60.0
 # ============================================================
 
 def compact_tokens(value):
-
     if value is None:
         return "--"
 
-    value = int(value)
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+
+    if value < 0:
+        return "--"
 
     if value >= 1_000_000_000:
         return f"{value / 1_000_000_000:.2f}B"
 
     if value >= 1_000_000:
-        return f"{value / 1_000_000:.2f}M"
+        return f"{value / 1_000_000:.1f}M"
 
     if value >= 1_000:
         return f"{value / 1_000:.1f}K"
@@ -57,15 +65,20 @@ def compact_tokens(value):
     return str(value)
 
 
-def format_eta(reset_epoch):
-
+def format_eta(reset_epoch, now=None):
     if reset_epoch is None:
         return "--"
 
-    seconds = max(
-        0,
-        int(reset_epoch - time.time())
-    )
+    try:
+        reset_epoch = float(reset_epoch)
+        current_time = time.time() if now is None else float(now)
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+
+    if not math.isfinite(reset_epoch) or not math.isfinite(current_time):
+        return "--"
+
+    seconds = max(0, int(reset_epoch - current_time))
 
     days, seconds = divmod(
         seconds,
@@ -89,8 +102,7 @@ def format_eta(reset_epoch):
 
 
 def remaining_percent(window):
-
-    if not window:
+    if not isinstance(window, Mapping):
         return "--"
 
     used = window.get(
@@ -100,15 +112,98 @@ def remaining_percent(window):
     if used is None:
         return "--"
 
-    remaining = max(
-        0,
-        min(
-            100,
-            100 - int(used)
-        )
-    )
+    try:
+        used_percent = float(used)
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+
+    if not math.isfinite(used_percent):
+        return "--"
+
+    remaining = max(0, min(100, round(100 - used_percent)))
 
     return str(remaining)
+
+
+def _numeric_display(value):
+    """Return a short integer string from nvidia-smi output, or '--'."""
+    text = str(value or "").strip()
+    if not text or text.upper() in {"N/A", "[NOT SUPPORTED]"}:
+        return "--"
+
+    match = re.match(r"^-?\d+(?:\.\d+)?", text)
+    if not match:
+        return "--"
+
+    try:
+        number = float(match.group(0))
+    except ValueError:
+        return "--"
+
+    if not math.isfinite(number):
+        return "--"
+    return str(round(number))
+
+
+def parse_nvidia_smi_output(output):
+    """Parse the first utilization,temperature row emitted by nvidia-smi."""
+    if not isinstance(output, str):
+        return "--", "--"
+
+    row = next((line.strip() for line in output.splitlines() if line.strip()), "")
+    parts = row.split(",", 1)
+    if len(parts) != 2:
+        return "--", "--"
+
+    return _numeric_display(parts[0]), _numeric_display(parts[1])
+
+
+def _protocol_value(value, max_length=24):
+    if value is None:
+        return "--"
+
+    text = str(value).strip()
+    if not text or any(character in text for character in "|\r\n"):
+        return "--"
+    return text[:max_length]
+
+
+def format_ai_packet(data):
+    data = data if isinstance(data, Mapping) else {}
+    return (
+        f"AI|TODAY={_protocol_value(data.get('today'), 12)}"
+        f"|LIFE={_protocol_value(data.get('lifetime'), 12)}"
+        f"|H5={_protocol_value(data.get('five_remaining'), 4)}"
+        f"|WEEK={_protocol_value(data.get('weekly_remaining'), 4)}"
+        f"|H5R={_protocol_value(data.get('five_reset'), 12)}"
+        f"|WR={_protocol_value(data.get('weekly_reset'), 12)}"
+    )
+
+
+def format_system_packet(data):
+    data = data if isinstance(data, Mapping) else {}
+    return (
+        f"SYS|CPU={_protocol_value(data.get('cpu'), 4)}"
+        f"|GPU={_protocol_value(data.get('gpu'), 4)}"
+        f"|RAM={_protocol_value(data.get('ram'), 4)}"
+        f"|TEMP={_protocol_value(data.get('temp'), 4)}"
+    )
+
+
+def parse_esp_command(line):
+    """Return a recognized firmware command, ignoring arbitrary serial text."""
+    command = str(line or "").strip()
+    if command in {
+        "PING",
+        "REFRESH|AI",
+        "REFRESH|SYS",
+        "MODE|AI",
+        "MODE|SYS",
+        "QUARK|READY",
+        "PONG",
+    }:
+        return command
+    return None
 
 
 # ============================================================
@@ -197,7 +292,6 @@ def find_quark_port():
 # ============================================================
 
 def get_nvidia_stats():
-
     executable = shutil.which(
         "nvidia-smi"
     )
@@ -230,27 +324,8 @@ def get_nvidia_stats():
         )
 
 
-        # If there are multiple GPUs,
-        # use the first one.
-
-        first_line = (
-            output
-            .strip()
-            .splitlines()[0]
-        )
-
-
-        gpu_usage, gpu_temp = [
-            part.strip()
-            for part
-            in first_line.split(",")
-        ]
-
-
-        return (
-            gpu_usage,
-            gpu_temp
-        )
+        # If there are multiple GPUs, the parser uses the first row.
+        return parse_nvidia_smi_output(output)
 
 
     except Exception:
@@ -647,158 +722,88 @@ class CodexAppServer:
 # ============================================================
 
 def select_codex_snapshot(result):
+    if not isinstance(result, Mapping):
+        return {}
 
-    by_limit = (
-        result.get(
-            "rateLimitsByLimitId"
-        )
-        or
-        {}
-    )
+    by_limit = result.get("rateLimitsByLimitId")
+    if isinstance(by_limit, Mapping):
+        snapshot = by_limit.get("codex")
+        if isinstance(snapshot, Mapping):
+            return snapshot
 
+        for value in by_limit.values():
+            if isinstance(value, Mapping) and value.get("limitId") == "codex":
+                return value
 
-    # Newer multi-bucket form.
-
-    snapshot = by_limit.get(
-        "codex"
-    )
-
-
-    if snapshot:
-
-        return snapshot
-
-
-    # Search by embedded limitId.
-
-    for value in by_limit.values():
-
-        if (
-            value.get("limitId")
-            ==
-            "codex"
-        ):
-
-            return value
-
-
-    # Backward-compatible view.
-
-    return (
-        result.get(
-            "rateLimits"
-        )
-        or
-        {}
-    )
+    legacy = result.get("rateLimits")
+    return legacy if isinstance(legacy, Mapping) else {}
 
 
 def extract_windows(
     rate_result
 ):
-
-    snapshot = (
-        select_codex_snapshot(
-            rate_result
-        )
-    )
-
-
+    snapshot = select_codex_snapshot(rate_result)
     five_hour = None
     weekly = None
 
-
-    for name in (
-        "primary",
-        "secondary"
-    ):
-
-        window = snapshot.get(
-            name
-        )
-
-
-        if not window:
+    for window in snapshot.values():
+        if not isinstance(window, Mapping):
+            continue
+        try:
+            duration = int(window.get("windowDurationMins"))
+        except (TypeError, ValueError, OverflowError):
             continue
 
-
-        duration = window.get(
-            "windowDurationMins"
-        )
-
-
         if duration == 300:
-
             five_hour = window
-
-
         elif duration == 10080:
-
             weekly = window
 
-
-    return (
-        five_hour,
-        weekly
-    )
+    return five_hour, weekly
 
 
 def extract_today_tokens(
-    usage_result
+    usage_result,
+    today=None,
 ):
-
-    buckets = (
-        usage_result.get(
-            "dailyUsageBuckets"
-        )
-    )
-
-
-    if buckets is None:
-
+    if not isinstance(usage_result, Mapping):
         return None
 
+    buckets = usage_result.get("dailyUsageBuckets")
+    if not isinstance(buckets, list):
+        return None
 
-    today_string = (
-        date.today().isoformat()
-    )
-
+    today_string = today.isoformat() if hasattr(today, "isoformat") else today
+    if today_string is None:
+        today_string = date.today().isoformat()
 
     for bucket in buckets:
+        if isinstance(bucket, Mapping) and bucket.get("startDate") == today_string:
+            tokens = bucket.get("tokens")
+            try:
+                return max(0, int(tokens))
+            except (TypeError, ValueError, OverflowError):
+                return None
 
-        if (
-            bucket.get("startDate")
-            ==
-            today_string
-        ):
-
-            return bucket.get(
-                "tokens"
-            )
-
-
-    # Daily data exists but there was
-    # no bucket for today.
-
+    # A valid bucket list with no matching date means zero tokens today.
     return 0
 
 
 def extract_lifetime_tokens(
     usage_result
 ):
+    if not isinstance(usage_result, Mapping):
+        return None
 
-    summary = (
-        usage_result.get(
-            "summary"
-        )
-        or
-        {}
-    )
+    summary = usage_result.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
 
-
-    return summary.get(
-        "lifetimeTokens"
-    )
+    value = summary.get("lifetimeTokens")
+    try:
+        return max(0, int(value)) if value is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 # ============================================================
