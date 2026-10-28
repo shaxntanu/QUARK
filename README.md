@@ -37,6 +37,8 @@ Short button presses move through the active mode's pages. Hold for about 0.8 se
 | Offline or an active-mode error | Red |
 | Refresh in progress | Red + blue |
 
+When the selected mode changes from waiting/offline to live data, the passive piezo plays a brief rising two-note acknowledgement. Routine telemetry packets do not repeat it.
+
 ## Build and install the Windows companion
 
 The companion detects the ESP32 USB serial port, reconnects after unplug/replug, keeps system telemetry moving while Codex data loads, and writes rotating logs to `%LOCALAPPDATA%\QUARK\quark.log`.

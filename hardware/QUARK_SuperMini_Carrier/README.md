@@ -26,7 +26,7 @@ All board connectors use 2.54 mm pitch. Connector pin 1 is identified on the sil
 |---|---|---|
 | J1 | GND, 3V3, SCL, SDA | External 128×64 OLED; SCL is GPIO1 and SDA is GPIO0. |
 | J2 | AI, COM, SYS OPEN | SPDT mode switch: connect COM to AI/GND for AI mode; leave COM open for System mode (`INPUT_PULLUP`). |
-| J3 | GPIO5, GND | Passive piezo disc only. |
+| J3 | GPIO5, GND | Passive piezo disc only; plays startup/control tones and the new-connection acknowledgement. |
 | SW1 | — | Page/refresh button from GPIO3 to GND. |
 | D1, D2 | — | Red and blue active-high status LEDs, each with a 330 Ω series resistor. |
 

@@ -236,6 +236,12 @@ void toneFor(
   delay(gap);
 }
 
+// A short rising two-note chime acknowledges a newly live companion feed.
+void connectionAcknowledgeSound() {
+  toneFor(1320, 75, 25);
+  toneFor(1760, 115, 0);
+}
+
 // =====================================================
 // ORIGINAL QUARK STARTUP SOUND
 // =====================================================
@@ -528,6 +534,7 @@ void handleSerialLine(
   // -----------------------------------------
 
   if (line.startsWith("AI|")) {
+    const bool wasConnected = aiConnected();
     String today, lifetime, fiveHour, weekly, fiveReset, weekReset;
     const bool hasToday = hasField(line, "TODAY");
     const bool hasLifetime = hasField(line, "LIFE");
@@ -566,6 +573,8 @@ void handleSerialLine(
     if (aiMode)
       waitingRefresh = false;
     updateStatusLED();
+    if (aiMode && !wasConnected)
+      connectionAcknowledgeSound();
     return;
   }
 
@@ -574,6 +583,7 @@ void handleSerialLine(
   // -----------------------------------------
 
   if (line.startsWith("SYS|")) {
+    const bool wasConnected = systemConnected();
     String cpu, gpu, ram, temperature;
     const bool hasCpu = hasField(line, "CPU");
     const bool hasGpu = hasField(line, "GPU");
@@ -609,6 +619,8 @@ void handleSerialLine(
     if (!aiMode)
       waitingRefresh = false;
     updateStatusLED();
+    if (!aiMode && !wasConnected)
+      connectionAcknowledgeSound();
     return;
   }
 
