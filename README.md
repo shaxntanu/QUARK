@@ -16,6 +16,10 @@ QUARK is an ESP32-C3 desk display for Codex usage and live PC telemetry. The ESP
 
 The faulty green LED channel on GPIO 7 is unused. The button and mode switch use `INPUT_PULLUP` and should connect to GND when closed. Use current-limiting resistors for each working LED channel.
 
+## Carrier PCB
+
+The KiCad design for the ESP32-C3 SuperMini carrier is in [`hardware/QUARK_SuperMini_Carrier`](hardware/QUARK_SuperMini_Carrier/README.md). It includes the schematic, two-layer PCB, BOM, previews, and Gerber/drill files for fabrication. The carrier routes the external OLED, mode switch, page button, passive piezo, and red/blue status LEDs to the firmware pin map above.
+
 ## OLED pages
 
 Short button presses move through the active mode's pages. Hold for about 0.8 seconds to request a refresh.

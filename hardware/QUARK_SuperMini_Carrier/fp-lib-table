@@ -1,0 +1,3 @@
+(fp_lib_table
+ (lib (name "QUARK") (type "KiCad") (uri "${KIPRJMOD}/QUARK.pretty") (options "") (descr "QUARK project footprints"))
+)

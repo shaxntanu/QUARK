@@ -879,7 +879,7 @@ void drawTokenPage(
   oled.setFont(u8g2_font_6x12_tf);
   oled.drawStr(0, 25, title);
 
-  drawBigValue(value, 48);
+  drawMetricValue(value, 48);
 
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 63, footerLabel);
@@ -889,7 +889,7 @@ void drawTokenPage(
 void drawAIOverview() {
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 24, "TOKENS TODAY");
-  drawBigValue(ai.today, 44);
+  drawMetricValue(ai.today, 44);
 
   const int fiveHour = percentValue(ai.fiveHour);
   const int weekly = percentValue(ai.weekly);

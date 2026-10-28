@@ -1,0 +1,16 @@
+Reference,Quantity,Description,Specification / footprint,Notes
+U1,1,ESP32-C3 SuperMini module,2 x 8 pins; 2.54 mm pitch,USB-C faces board top; module not included with bare PCB
+U1 socket,2,1 x 8 female socket strip,2.54 mm pitch,Install on carrier; socket rows are 15.24 mm center-to-center
+J1,1,1 x 4 straight pin header or wire harness,2.54 mm pitch,External OLED: GND / 3V3 / SCL / SDA
+J2,1,1 x 3 straight pin header or wire harness,2.54 mm pitch,External mode switch: AI / COM / SYS open
+J3,1,1 x 2 straight pin header or wire harness,2.54 mm pitch,Passive piezo: GPIO5 / GND
+R1 R2,2,Resistor,330 ohm; DIN0204 axial THT,LED current limiting
+D1,1,Red through-hole LED,3 mm,Status LED
+D2,1,Blue through-hole LED,3 mm,Status LED
+SW1,1,Momentary tactile switch,Omron B3F-100x compatible footprint,Page / refresh button
+C1,1,Ceramic capacitor,10 uF; 5 mm pitch THT,Power decoupling
+C2,1,Ceramic capacitor,100 nF; 5 mm pitch THT,Power decoupling
+OLED1,1,OLED module,128 x 64; SH1106; 4-wire I2C,Off-board accessory
+SW2,1,SPDT mode switch,ON-ON; center common,Off-board accessory; COM to AI/GND or SYS/open
+BZ1,1,Passive piezo disc,GPIO-compatible,Off-board accessory; do not use a high-current magnetic buzzer
+H1-H4,4,M3 fastener set,3.2 mm clearance,Optional screws and standoffs for mounting
