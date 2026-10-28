@@ -768,6 +768,16 @@ void drawBigValue(const String &value, int baseline) {
   oled.setFont(u8g2_font_6x10_tf);
 }
 
+void drawMetricValue(const String &value, int baseline) {
+  oled.setFont(u8g2_font_logisoso16_tf);
+
+  const int textWidth = oled.getStrWidth(value.c_str());
+  const int x = (128 - textWidth) / 2;
+  oled.drawStr(x < 0 ? 0 : x, baseline, value.c_str());
+
+  oled.setFont(u8g2_font_6x10_tf);
+}
+
 void drawCentered(const char *text, int baseline) {
   const int width = oled.getStrWidth(text);
   oled.drawStr((128 - width) / 2, baseline, text);
@@ -838,7 +848,7 @@ void drawMetricPage(
   oled.drawStr(2, 26, title);
   oled.setDrawColor(1);
 
-  drawBigValue(displayValue, 43);
+  drawMetricValue(displayValue, 45);
   if (sideLabel[0]) {
     drawLineChart(history, 2, 47, 77, 14);
     oled.setFont(u8g2_font_6x10_tf);
