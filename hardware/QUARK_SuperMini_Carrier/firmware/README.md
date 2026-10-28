@@ -4,6 +4,8 @@
 
 When the selected mode changes from waiting/offline to live data, the firmware plays one short rising two-note acknowledgement on the passive piezo. It does not chime on each routine telemetry packet.
 
+The piezo PWM is attached only while a note plays. Between notes, the firmware detaches PWM and holds GPIO5 low to keep the buzzer silent.
+
 With the ESP32-C3 in download mode, flash it from PowerShell using the `esptool.exe` bundled with the Arduino ESP32 package:
 
 ```powershell

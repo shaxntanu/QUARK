@@ -215,23 +215,37 @@ void statusError() {
 // BUZZER
 // =====================================================
 
+bool buzzerPwmAttached = false;
+
+void buzzerOff() {
+  if (buzzerPwmAttached) {
+    ledcWriteTone(BUZZER_PIN, 0);
+    ledcDetach(BUZZER_PIN);
+    buzzerPwmAttached = false;
+  }
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+}
+
 void toneFor(
   uint16_t hz,
   uint16_t duration,
   uint16_t gap = 30
 ) {
 
-  ledcWriteTone(
-    BUZZER_PIN,
-    hz
-  );
+  if (hz == 0 || !ledcAttach(BUZZER_PIN, hz, 10)) {
+    buzzerOff();
+    delay(gap);
+    return;
+  }
+
+  buzzerPwmAttached = true;
+  ledcWriteTone(BUZZER_PIN, hz);
 
   delay(duration);
 
-  ledcWriteTone(
-    BUZZER_PIN,
-    0
-  );
+  buzzerOff();
 
   delay(gap);
 }
@@ -1094,13 +1108,9 @@ ledcAttach(
     8
   );
 
-// ---------------- BUZZER PWM ----------------
+// ---------------- BUZZER ----------------
 
-  ledcAttach(
-    BUZZER_PIN,
-    2000,
-    8
-  );
+  buzzerOff();
 
 ledOff();
 
