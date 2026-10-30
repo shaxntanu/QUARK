@@ -8,12 +8,13 @@ import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import psutil
@@ -47,6 +48,11 @@ CODEX_MIN_REFRESH_INTERVAL = 5.0
 AI_HEARTBEAT_INTERVAL = 60.0
 SERIAL_MAX_LINE = 160
 FIRMWARE_HANDSHAKE_RETRY = 30.0
+
+_network_sample = None
+_network_sample_time = 0.0
+_link_probe_lock = threading.Lock()
+_link_probe_state = {"status": "--", "checked_at": 0.0, "running": False}
 
 logger = logging.getLogger("quark")
 
@@ -256,11 +262,26 @@ def parse_nvidia_smi_output(output):
         return "--", "--"
 
     row = next((line.strip() for line in output.splitlines() if line.strip()), "")
-    parts = row.split(",", 1)
-    if len(parts) != 2:
+    parts = [part.strip() for part in row.split(",")]
+    if len(parts) < 2:
         return "--", "--"
 
     return _numeric_display(parts[0]), _numeric_display(parts[1])
+
+
+def parse_nvidia_vram_percent(output):
+    """Parse used/total MiB from a four-column nvidia-smi row."""
+    if not isinstance(output, str):
+        return "--"
+    row = next((line.strip() for line in output.splitlines() if line.strip()), "")
+    parts = [part.strip() for part in row.split(",")]
+    if len(parts) < 4:
+        return "--"
+    used = _numeric_display(parts[2])
+    total = _numeric_display(parts[3])
+    if used == "--" or total == "--" or int(total) <= 0:
+        return "--"
+    return str(max(0, min(100, round(100 * int(used) / int(total)))))
 
 
 def _protocol_value(value, max_length=24):
@@ -275,24 +296,56 @@ def _protocol_value(value, max_length=24):
 
 def format_ai_packet(data):
     data = data if isinstance(data, Mapping) else {}
-    return (
-        f"AI|TODAY={_protocol_value(data.get('today'), 12)}"
-        f"|LIFE={_protocol_value(data.get('lifetime'), 12)}"
-        f"|H5={_protocol_value(data.get('five_remaining'), 4)}"
-        f"|WEEK={_protocol_value(data.get('weekly_remaining'), 4)}"
-        f"|H5R={_protocol_value(data.get('five_reset'), 12)}"
-        f"|WR={_protocol_value(data.get('weekly_reset'), 12)}"
+    fields = [
+        f"AI|TODAY={_protocol_value(data.get('today'), 12)}",
+        f"LIFE={_protocol_value(data.get('lifetime'), 12)}",
+        f"H5={_protocol_value(data.get('five_remaining'), 4)}",
+        f"WEEK={_protocol_value(data.get('weekly_remaining'), 4)}",
+        f"H5R={_protocol_value(data.get('five_reset'), 12)}",
+        f"WR={_protocol_value(data.get('weekly_reset'), 12)}",
+    ]
+    optional_fields = (
+        ("PEAK", "peak_daily", 12),
+        ("STREAK", "current_streak", 4),
+        ("BEST", "longest_streak", 4),
+        ("LONGEST", "longest_turn", 12),
+        ("D7", "daily_trend", 48),
     )
+    for field, key, limit in optional_fields:
+        value = _protocol_value(data.get(key), limit)
+        if key in data:
+            fields.append(f"{field}={value}")
+    return "|".join(fields)
 
 
 def format_system_packet(data):
     data = data if isinstance(data, Mapping) else {}
-    return (
-        f"SYS|CPU={_protocol_value(data.get('cpu'), 4)}"
-        f"|GPU={_protocol_value(data.get('gpu'), 4)}"
-        f"|RAM={_protocol_value(data.get('ram'), 4)}"
-        f"|TEMP={_protocol_value(data.get('temp'), 4)}"
+    fields = [
+        f"SYS|CPU={_protocol_value(data.get('cpu'), 4)}",
+        f"GPU={_protocol_value(data.get('gpu'), 4)}",
+        f"RAM={_protocol_value(data.get('ram'), 4)}",
+        f"TEMP={_protocol_value(data.get('temp'), 4)}",
+    ]
+    optional_fields = (
+        ("VRAM", "vram", 4),
+        ("DISK", "disk", 4),
+        ("FREE", "memory_free", 8),
+        ("DFREE", "disk_free", 8),
+        ("DN", "down", 8),
+        ("UP", "up", 8),
+        ("DNP", "down_percent", 3),
+        ("UPP", "up_percent", 3),
+        ("FREQ", "freq", 6),
+        ("SYSUP", "uptime", 12),
+        ("BAT", "battery", 4),
+        ("AC", "ac", 4),
+        ("WEB", "link", 4),
     )
+    for field, key, limit in optional_fields:
+        value = _protocol_value(data.get(key), limit)
+        if key in data:
+            fields.append(f"{field}={value}")
+    return "|".join(fields)
 
 
 def parse_esp_command(line):
@@ -379,13 +432,13 @@ def find_quark_port(port_override=None):
 def get_nvidia_stats():
     executable = shutil.which("nvidia-smi")
     if executable is None:
-        return "--", "--"
+        return "--", "--", "--"
 
     try:
         result = subprocess.run(
             [
                 executable,
-                "--query-gpu=utilization.gpu,temperature.gpu",
+                "--query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -396,22 +449,222 @@ def get_nvidia_stats():
         )
         if result.returncode != 0:
             logger.debug("nvidia-smi returned %s", result.returncode)
-            return "--", "--"
-        return parse_nvidia_smi_output(result.stdout)
+            return "--", "--", "--"
+        gpu, temperature = parse_nvidia_smi_output(result.stdout)
+        return gpu, temperature, parse_nvidia_vram_percent(result.stdout)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("NVIDIA telemetry unavailable: %s", exc)
-        return "--", "--"
+        return "--", "--", "--"
+
+
+def compact_gigabytes(byte_count):
+    try:
+        gib = max(0.0, float(byte_count)) / (1024 ** 3)
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    if not math.isfinite(gib):
+        return "--"
+    return f"{gib:.1f}G" if gib < 10 else f"{gib:.0f}G"
+
+
+def compact_rate(bytes_per_second):
+    try:
+        rate = max(0.0, float(bytes_per_second))
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    if not math.isfinite(rate):
+        return "--"
+    if rate < 1024:
+        return f"{round(rate)}B"
+    if rate < 1024 ** 2:
+        value, suffix = rate / 1024, "K"
+    elif rate < 1024 ** 3:
+        value, suffix = rate / (1024 ** 2), "M"
+    else:
+        value, suffix = rate / (1024 ** 3), "G"
+    return f"{value:.1f}{suffix}" if value < 10 else f"{value:.0f}{suffix}"
+
+
+def rate_chart_percent(bytes_per_second, ceiling=20 * 1024 ** 2):
+    try:
+        rate = max(0.0, float(bytes_per_second))
+        limit = max(1.0, float(ceiling))
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    if not math.isfinite(rate) or not math.isfinite(limit):
+        return "--"
+    return str(max(0, min(100, round(100 * rate / limit))))
+
+
+def compact_duration(seconds):
+    try:
+        remaining = max(0, int(seconds))
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    days, remaining = divmod(remaining, 86400)
+    hours, remaining = divmod(remaining, 3600)
+    minutes = remaining // 60
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes}m"
+    return f"{minutes}m"
+
+
+def _summary_integer(usage_result, field):
+    if not isinstance(usage_result, Mapping):
+        return None
+    summary = usage_result.get("summary")
+    if not isinstance(summary, Mapping):
+        return None
+    try:
+        value = summary.get(field)
+        return max(0, int(value)) if value is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def extract_daily_token_trend(usage_result, today=None):
+    """Return seven daily token buckets normalized to 0-100 for the OLED chart."""
+    if not isinstance(usage_result, Mapping):
+        return None
+    buckets = usage_result.get("dailyUsageBuckets")
+    if not isinstance(buckets, list):
+        return None
+
+    reference = today if isinstance(today, date) else date.today()
+    if isinstance(today, str):
+        try:
+            reference = date.fromisoformat(today)
+        except ValueError:
+            return None
+
+    values_by_day = {}
+    for bucket in buckets:
+        if not isinstance(bucket, Mapping):
+            continue
+        try:
+            day = date.fromisoformat(str(bucket.get("startDate", "")))
+            tokens = max(0, int(bucket.get("tokens")))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        values_by_day[day] = tokens
+
+    values = [values_by_day.get(reference - timedelta(days=offset), 0) for offset in range(6, -1, -1)]
+    peak = max(values, default=0)
+    if peak <= 0:
+        return ",".join("0" for _ in values)
+    return ",".join(str(round(value * 100 / peak)) for value in values)
+
+
+def _probe_chatgpt_link():
+    try:
+        with socket.create_connection(("chatgpt.com", 443), timeout=2.0):
+            status = "OK"
+    except OSError:
+        status = "NO"
+    with _link_probe_lock:
+        _link_probe_state["status"] = status
+        _link_probe_state["checked_at"] = time.monotonic()
+        _link_probe_state["running"] = False
+
+
+def get_chatgpt_link_status():
+    now = time.monotonic()
+    with _link_probe_lock:
+        if not _link_probe_state["running"] and now - _link_probe_state["checked_at"] >= 30:
+            _link_probe_state["running"] = True
+            threading.Thread(target=_probe_chatgpt_link, name="QUARK-link-probe", daemon=True).start()
+        return _link_probe_state["status"]
+
+
+def get_network_rates():
+    global _network_sample, _network_sample_time
+    try:
+        counters = psutil.net_io_counters()
+    except (OSError, RuntimeError):
+        logger.debug("Network throughput telemetry unavailable", exc_info=True)
+        return "--", "--", "--", "--"
+    now = time.monotonic()
+    if counters is None:
+        return "--", "--", "--", "--"
+
+    current = (counters.bytes_recv, counters.bytes_sent)
+    if _network_sample is None or now <= _network_sample_time:
+        download = upload = 0.0
+    else:
+        elapsed = now - _network_sample_time
+        download = max(0, current[0] - _network_sample[0]) / elapsed
+        upload = max(0, current[1] - _network_sample[1]) / elapsed
+
+    _network_sample = current
+    _network_sample_time = now
+    return (
+        compact_rate(download),
+        compact_rate(upload),
+        rate_chart_percent(download),
+        rate_chart_percent(upload),
+    )
 
 
 def get_system_data():
     cpu = round(psutil.cpu_percent(interval=0.15))
-    ram = round(psutil.virtual_memory().percent)
-    gpu, temp = get_nvidia_stats()
+    memory = psutil.virtual_memory()
+    ram = round(memory.percent)
+    gpu, temp, vram = get_nvidia_stats()
+
+    disk_percent = disk_free = "--"
+    system_drive = os.environ.get("SystemDrive")
+    disk_target = f"{system_drive}\\" if system_drive else Path.home().anchor or "."
+    try:
+        disk = psutil.disk_usage(disk_target)
+        disk_percent = str(round(disk.percent))
+        disk_free = compact_gigabytes(disk.free)
+    except (OSError, ValueError):
+        logger.debug("System drive telemetry unavailable", exc_info=True)
+
+    down, up, down_percent, up_percent = get_network_rates()
+    frequency = "--"
+    try:
+        clock = psutil.cpu_freq()
+        if clock and math.isfinite(clock.current) and clock.current > 0:
+            ghz = clock.current / 1000
+            frequency = f"{ghz:.1f}G"
+    except (OSError, AttributeError, TypeError, ValueError):
+        logger.debug("CPU frequency telemetry unavailable", exc_info=True)
+
+    try:
+        uptime = compact_duration(time.time() - psutil.boot_time())
+    except (OSError, ValueError):
+        uptime = "--"
+
+    battery_percent = ac_state = "--"
+    try:
+        battery = psutil.sensors_battery()
+        if battery is not None:
+            battery_percent = str(max(0, min(100, round(battery.percent))))
+            ac_state = "ON" if battery.power_plugged else "OFF"
+    except (OSError, AttributeError, ValueError):
+        logger.debug("Battery telemetry unavailable", exc_info=True)
+
     return {
         "cpu": str(cpu),
         "ram": str(ram),
         "gpu": gpu,
         "temp": temp,
+        "vram": vram,
+        "memory_free": compact_gigabytes(memory.available),
+        "disk": disk_percent,
+        "disk_free": disk_free,
+        "down": down,
+        "up": up,
+        "down_percent": down_percent,
+        "up_percent": up_percent,
+        "freq": frequency,
+        "uptime": uptime,
+        "battery": battery_percent,
+        "ac": ac_state,
+        "link": get_chatgpt_link_status(),
     }
 
 
@@ -482,7 +735,7 @@ class CodexAppServer:
                         "clientInfo": {
                             "name": "quark",
                             "title": "QUARK",
-                            "version": "1.1.0",
+                            "version": "1.2.0",
                         }
                     },
                     timeout=CODEX_RPC_TIMEOUT,
@@ -727,6 +980,11 @@ def get_codex_data(
 
     today_tokens = None
     lifetime_tokens = None
+    peak_daily_tokens = None
+    current_streak = None
+    longest_streak = None
+    longest_turn = None
+    daily_trend = None
 
 
     if usage_result is not None:
@@ -744,6 +1002,13 @@ def get_codex_data(
             )
         )
 
+        peak_daily_tokens = _summary_integer(usage_result, "peakDailyTokens")
+        current_streak = _summary_integer(usage_result, "currentStreakDays")
+        longest_streak = _summary_integer(usage_result, "longestStreakDays")
+        longest_turn_seconds = _summary_integer(usage_result, "longestRunningTurnSec")
+        longest_turn = compact_duration(longest_turn_seconds) if longest_turn_seconds is not None else None
+        daily_trend = extract_daily_token_trend(usage_result)
+
 
     five_hour = None
     weekly = None
@@ -758,7 +1023,7 @@ def get_codex_data(
         )
 
 
-    return {
+    data = {
 
         "today":
             compact_tokens(
@@ -798,6 +1063,15 @@ def get_codex_data(
                 else None
             )
     }
+
+    data.update({
+        "peak_daily": compact_tokens(peak_daily_tokens),
+        "current_streak": str(current_streak) if current_streak is not None else "--",
+        "longest_streak": str(longest_streak) if longest_streak is not None else "--",
+        "longest_turn": longest_turn or "--",
+        "daily_trend": daily_trend or "--",
+    })
+    return data
 
 
 # ============================================================
@@ -968,7 +1242,7 @@ def main(argv=None):
     parser.add_argument("--port", help="use a specific serial port, such as COM7")
     parser.add_argument("--list-ports", action="store_true", help="show detected serial ports and exit")
     parser.add_argument("--self-test", action="store_true", help="check telemetry and local dependencies")
-    parser.add_argument("--version", action="version", version="QUARK Companion 1.1.0")
+    parser.add_argument("--version", action="version", version="QUARK Companion 1.2.0")
     args = parser.parse_args(argv)
 
     setup_logging()

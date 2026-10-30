@@ -107,6 +107,10 @@ static const unsigned char quarkLogo[] U8X8_PROGMEM = {
 struct AIData {
   String today = "--";
   String lifetime = "--";
+  String peak = "--";
+  String currentStreak = "--";
+  String bestStreak = "--";
+  String longestTurn = "--";
 
   String fiveHour = "--";
   String weekly = "--";
@@ -124,6 +128,19 @@ struct SystemData {
   String gpu = "--";
   String ram = "--";
   String gpuTemp = "--";
+  String vram = "--";
+  String memoryFree = "--";
+  String disk = "--";
+  String diskFree = "--";
+  String download = "--";
+  String upload = "--";
+  String downloadPercent = "--";
+  String uploadPercent = "--";
+  String frequency = "--";
+  String uptime = "--";
+  String battery = "--";
+  String ac = "--";
+  String web = "--";
 
   unsigned long lastRx = 0;
 
@@ -143,6 +160,11 @@ SystemData sys;
 GraphHistory cpuHistory;
 GraphHistory ramHistory;
 GraphHistory gpuHistory;
+GraphHistory vramHistory;
+GraphHistory diskHistory;
+GraphHistory downloadHistory;
+GraphHistory uploadHistory;
+GraphHistory dailyTokenHistory;
 GraphHistory fiveHourHistory;
 GraphHistory weeklyHistory;
 
@@ -151,9 +173,14 @@ GraphHistory weeklyHistory;
 // =====================================================
 
 int page = 0;
-const int totalPages = 4;
+const int aiPageCount = 6;
+const int systemPageCount = 7;
 
 bool aiMode = true;
+
+int activePageCount() {
+  return aiMode ? aiPageCount : systemPageCount;
+}
 
 bool lastMode = true;
 bool lastModeReading = true;
@@ -168,11 +195,15 @@ unsigned long refreshStarted = 0;
 unsigned long lastDebounce = 0;
 unsigned long modeDebounceStarted = 0;
 unsigned long pressStart = 0;
+unsigned long modeActivatedAt = 0;
+unsigned long connectionCandidateAt = 0;
 
 unsigned long lastDisplayUpdate = 0;
 
 const unsigned long DEBOUNCE_DELAY = 40;
 const unsigned long REFRESH_TIMEOUT = 5000;
+const unsigned long MODE_CONNECT_GRACE = 1500;
+const unsigned long CONNECTION_STABLE_TIME = 400;
 const size_t SERIAL_BUFFER_LIMIT = 160;
 const int LOW_QUOTA_THRESHOLD = 15;
 
@@ -184,6 +215,7 @@ const unsigned long SYS_TIMEOUT = 6000;
 
 String serialBuffer;
 bool serialLineOverflow = false;
+bool acknowledgePlayedForMode = false;
 
 // =====================================================
 // RGB
@@ -318,10 +350,6 @@ void showQuarkSplash() {
 // =====================================================
 
 bool aiConnected() {
-
-  if (ai.error)
-    return false;
-
   if (ai.lastRx == 0)
     return false;
 
@@ -333,10 +361,6 @@ bool aiConnected() {
 }
 
 bool systemConnected() {
-
-  if (sys.error)
-    return false;
-
   if (sys.lastRx == 0)
     return false;
 
@@ -345,6 +369,38 @@ bool systemConnected() {
     <
     SYS_TIMEOUT
   );
+}
+
+bool modeConnectionHealthy() {
+  return aiMode
+    ? (aiConnected() && !ai.error)
+    : (systemConnected() && !sys.error);
+}
+
+bool modeConnectionGraceActive() {
+  return modeActivatedAt != 0
+    && millis() - modeActivatedAt < MODE_CONNECT_GRACE;
+}
+
+void updateConnectionAcknowledgement() {
+  if (acknowledgePlayedForMode || modeConnectionGraceActive())
+    return;
+
+  if (!modeConnectionHealthy()) {
+    connectionCandidateAt = 0;
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (connectionCandidateAt == 0) {
+    connectionCandidateAt = now;
+    return;
+  }
+
+  if (now - connectionCandidateAt >= CONNECTION_STABLE_TIME) {
+    acknowledgePlayedForMode = true;
+    connectionAcknowledgeSound();
+  }
 }
 
 // =====================================================
@@ -361,10 +417,13 @@ enum DeviceStatus {
 // DeviceStatus before the enum declaration.
 int currentStatus() {
 
-  if (waitingRefresh)
+  if (waitingRefresh || modeConnectionGraceActive())
     return STATUS_BUSY;
 
   if (aiMode) {
+
+    if (ai.error)
+      return STATUS_ERROR;
 
     if (aiConnected())
       return STATUS_NORMAL;
@@ -372,6 +431,9 @@ int currentStatus() {
     return STATUS_ERROR;
 
   } else {
+
+    if (sys.error)
+      return STATUS_ERROR;
 
     if (systemConnected())
       return STATUS_NORMAL;
@@ -418,7 +480,7 @@ bool readField(const String &line, const String &key, String &value) {
     valueEnd = line.length();
 
   const int valueLength = valueEnd - valueStart;
-  if (valueLength < 1 || valueLength > 20)
+  if (valueLength < 1 || valueLength > 48)
     return false;
 
   for (int i = valueStart; i < valueEnd; ++i) {
@@ -467,6 +529,79 @@ bool validTemperature(const String &value) {
 
   const int parsed = value.toInt();
   return parsed >= 0 && parsed <= 150;
+}
+
+bool validMetricLabel(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 8)
+    return false;
+
+  bool hasDigit = false;
+  bool hasDecimal = false;
+  bool hasSuffix = false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char character = value[i];
+    if (character >= '0' && character <= '9' && !hasSuffix) {
+      hasDigit = true;
+    } else if (character == '.' && !hasDecimal && !hasSuffix) {
+      hasDecimal = true;
+    } else if ((character == 'B' || character == 'K' || character == 'M'
+                || character == 'G' || character == 'T')
+               && !hasSuffix && i == value.length() - 1) {
+      hasSuffix = true;
+    } else {
+      return false;
+    }
+  }
+  return hasDigit;
+}
+
+bool validSmallCount(const String &value) {
+  if (value == "--")
+    return true;
+  if (!value.length() || value.length() > 4)
+    return false;
+  for (size_t i = 0; i < value.length(); ++i) {
+    if (value[i] < '0' || value[i] > '9')
+      return false;
+  }
+  return true;
+}
+
+bool validDailyTrend(const String &value) {
+  if (value == "--")
+    return true;
+  int start = 0;
+  int count = 0;
+  while (start <= value.length()) {
+    int end = value.indexOf(',', start);
+    if (end < 0)
+      end = value.length();
+    const String sample = value.substring(start, end);
+    if (!validPercent(sample))
+      return false;
+    ++count;
+    if (count > 7 || end == value.length())
+      break;
+    start = end + 1;
+  }
+  return count == 7;
+}
+
+void setDailyTrend(const String &value) {
+  if (value == "--")
+    return;
+  int start = 0;
+  for (uint8_t point = 0; point < 7; ++point) {
+    int end = value.indexOf(',', start);
+    if (end < 0)
+      end = value.length();
+    dailyTokenHistory.values[point] = static_cast<int8_t>(value.substring(start, end).toInt());
+    start = end + 1;
+  }
+  dailyTokenHistory.count = 7;
+  dailyTokenHistory.next = 7;
 }
 
 bool validTokenLabel(const String &value) {
@@ -548,14 +683,19 @@ void handleSerialLine(
   // -----------------------------------------
 
   if (line.startsWith("AI|")) {
-    const bool wasConnected = aiConnected();
     String today, lifetime, fiveHour, weekly, fiveReset, weekReset;
+    String peak, currentStreak, bestStreak, longestTurn, dailyTrend;
     const bool hasToday = hasField(line, "TODAY");
     const bool hasLifetime = hasField(line, "LIFE");
     const bool hasFiveHour = hasField(line, "H5");
     const bool hasWeekly = hasField(line, "WEEK");
     const bool hasFiveReset = hasField(line, "H5R");
     const bool hasWeekReset = hasField(line, "WR");
+    const bool hasPeak = hasField(line, "PEAK");
+    const bool hasCurrentStreak = hasField(line, "STREAK");
+    const bool hasBestStreak = hasField(line, "BEST");
+    const bool hasLongestTurn = hasField(line, "LONGEST");
+    const bool hasDailyTrend = hasField(line, "D7");
 
     // Validate the complete packet before changing any live values.
     if (hasToday && (!readField(line, "TODAY", today) || !validTokenLabel(today))) return;
@@ -564,8 +704,14 @@ void handleSerialLine(
     if (hasWeekly && (!readField(line, "WEEK", weekly) || !validPercent(weekly))) return;
     if (hasFiveReset && (!readField(line, "H5R", fiveReset) || !validResetLabel(fiveReset))) return;
     if (hasWeekReset && (!readField(line, "WR", weekReset) || !validResetLabel(weekReset))) return;
+    if (hasPeak && (!readField(line, "PEAK", peak) || !validTokenLabel(peak))) return;
+    if (hasCurrentStreak && (!readField(line, "STREAK", currentStreak) || !validSmallCount(currentStreak))) return;
+    if (hasBestStreak && (!readField(line, "BEST", bestStreak) || !validSmallCount(bestStreak))) return;
+    if (hasLongestTurn && (!readField(line, "LONGEST", longestTurn) || !validResetLabel(longestTurn))) return;
+    if (hasDailyTrend && (!readField(line, "D7", dailyTrend) || !validDailyTrend(dailyTrend))) return;
 
-    const bool updated = hasToday || hasLifetime || hasFiveHour || hasWeekly || hasFiveReset || hasWeekReset;
+    const bool updated = hasToday || hasLifetime || hasFiveHour || hasWeekly || hasFiveReset || hasWeekReset
+      || hasPeak || hasCurrentStreak || hasBestStreak || hasLongestTurn || hasDailyTrend;
     if (!updated)
       return;
 
@@ -581,14 +727,17 @@ void handleSerialLine(
     }
     if (hasFiveReset) ai.fiveReset = fiveReset;
     if (hasWeekReset) ai.weekReset = weekReset;
+    if (hasPeak) ai.peak = peak;
+    if (hasCurrentStreak) ai.currentStreak = currentStreak;
+    if (hasBestStreak) ai.bestStreak = bestStreak;
+    if (hasLongestTurn) ai.longestTurn = longestTurn;
+    if (hasDailyTrend) setDailyTrend(dailyTrend);
 
     ai.lastRx = millis();
     ai.error = false;
     if (aiMode)
       waitingRefresh = false;
     updateStatusLED();
-    if (aiMode && !wasConnected)
-      connectionAcknowledgeSound();
     return;
   }
 
@@ -597,20 +746,48 @@ void handleSerialLine(
   // -----------------------------------------
 
   if (line.startsWith("SYS|")) {
-    const bool wasConnected = systemConnected();
-    String cpu, gpu, ram, temperature;
+    String cpu, gpu, ram, temperature, vram, disk, memoryFree, diskFree;
+    String download, upload, downPercent, upPercent, frequency, uptime, battery, ac, web;
     const bool hasCpu = hasField(line, "CPU");
     const bool hasGpu = hasField(line, "GPU");
     const bool hasRam = hasField(line, "RAM");
     const bool hasTemperature = hasField(line, "TEMP");
+    const bool hasVram = hasField(line, "VRAM");
+    const bool hasDisk = hasField(line, "DISK");
+    const bool hasMemoryFree = hasField(line, "FREE");
+    const bool hasDiskFree = hasField(line, "DFREE");
+    const bool hasDownload = hasField(line, "DN");
+    const bool hasUpload = hasField(line, "UP");
+    const bool hasDownPercent = hasField(line, "DNP");
+    const bool hasUpPercent = hasField(line, "UPP");
+    const bool hasFrequency = hasField(line, "FREQ");
+    const bool hasUptime = hasField(line, "SYSUP");
+    const bool hasBattery = hasField(line, "BAT");
+    const bool hasAc = hasField(line, "AC");
+    const bool hasWeb = hasField(line, "WEB");
 
     // Keep updates atomic so a malformed trailing value cannot partly apply.
     if (hasCpu && (!readField(line, "CPU", cpu) || !validPercent(cpu))) return;
     if (hasGpu && (!readField(line, "GPU", gpu) || !validPercent(gpu))) return;
     if (hasRam && (!readField(line, "RAM", ram) || !validPercent(ram))) return;
     if (hasTemperature && (!readField(line, "TEMP", temperature) || !validTemperature(temperature))) return;
+    if (hasVram && (!readField(line, "VRAM", vram) || !validPercent(vram))) return;
+    if (hasDisk && (!readField(line, "DISK", disk) || !validPercent(disk))) return;
+    if (hasMemoryFree && (!readField(line, "FREE", memoryFree) || !validMetricLabel(memoryFree))) return;
+    if (hasDiskFree && (!readField(line, "DFREE", diskFree) || !validMetricLabel(diskFree))) return;
+    if (hasDownload && (!readField(line, "DN", download) || !validMetricLabel(download))) return;
+    if (hasUpload && (!readField(line, "UP", upload) || !validMetricLabel(upload))) return;
+    if (hasDownPercent && (!readField(line, "DNP", downPercent) || !validPercent(downPercent))) return;
+    if (hasUpPercent && (!readField(line, "UPP", upPercent) || !validPercent(upPercent))) return;
+    if (hasFrequency && (!readField(line, "FREQ", frequency) || !validMetricLabel(frequency))) return;
+    if (hasUptime && (!readField(line, "SYSUP", uptime) || !validResetLabel(uptime))) return;
+    if (hasBattery && (!readField(line, "BAT", battery) || !validPercent(battery))) return;
+    if (hasAc && (!readField(line, "AC", ac) || (ac != "ON" && ac != "OFF" && ac != "--"))) return;
+    if (hasWeb && (!readField(line, "WEB", web) || (web != "OK" && web != "NO" && web != "--"))) return;
 
-    const bool updated = hasCpu || hasGpu || hasRam || hasTemperature;
+    const bool updated = hasCpu || hasGpu || hasRam || hasTemperature || hasVram || hasDisk
+      || hasMemoryFree || hasDiskFree || hasDownload || hasUpload || hasDownPercent
+      || hasUpPercent || hasFrequency || hasUptime || hasBattery || hasAc || hasWeb;
     if (!updated)
       return;
 
@@ -627,14 +804,37 @@ void handleSerialLine(
       appendSample(ramHistory, ram);
     }
     if (hasTemperature) sys.gpuTemp = temperature;
+    if (hasVram) {
+      sys.vram = vram;
+      appendSample(vramHistory, vram);
+    }
+    if (hasDisk) {
+      sys.disk = disk;
+      appendSample(diskHistory, disk);
+    }
+    if (hasMemoryFree) sys.memoryFree = memoryFree;
+    if (hasDiskFree) sys.diskFree = diskFree;
+    if (hasDownload) sys.download = download;
+    if (hasUpload) sys.upload = upload;
+    if (hasDownPercent) {
+      sys.downloadPercent = downPercent;
+      appendSample(downloadHistory, downPercent);
+    }
+    if (hasUpPercent) {
+      sys.uploadPercent = upPercent;
+      appendSample(uploadHistory, upPercent);
+    }
+    if (hasFrequency) sys.frequency = frequency;
+    if (hasUptime) sys.uptime = uptime;
+    if (hasBattery) sys.battery = battery;
+    if (hasAc) sys.ac = ac;
+    if (hasWeb) sys.web = web;
 
     sys.lastRx = millis();
     sys.error = false;
     if (!aiMode)
       waitingRefresh = false;
     updateStatusLED();
-    if (!aiMode && !wasConnected)
-      connectionAcknowledgeSound();
     return;
   }
 
@@ -809,9 +1009,27 @@ void drawCentered(const char *text, int baseline) {
   oled.drawStr((128 - width) / 2, baseline, text);
 }
 
+void drawFooterPair(const char *label, const String &value) {
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(0, 61, label);
+  const int labelWidth = oled.getStrWidth(label);
+  int valueWidth = oled.getStrWidth(value.c_str());
+  int valueX = 127 - valueWidth;
+  if (valueX < labelWidth + 5) {
+    oled.setFont(u8g2_font_5x7_tf);
+    valueWidth = oled.getStrWidth(value.c_str());
+    valueX = 127 - valueWidth;
+  }
+  oled.drawStr(valueX < labelWidth + 3 ? labelWidth + 3 : valueX, 61, value.c_str());
+  oled.setFont(u8g2_font_6x10_tf);
+}
+
 void drawHeader() {
   const bool connected = aiMode ? aiConnected() : systemConnected();
-  const char *statusText = waitingRefresh ? "BUSY" : (connected ? "LIVE" : "WAIT");
+  const bool activeError = aiMode ? ai.error : sys.error;
+  const char *statusText = waitingRefresh ? "BUSY"
+    : (modeConnectionGraceActive() ? "LINK"
+    : (activeError && connected ? "ERR" : (connected ? "LIVE" : "WAIT")));
 
   oled.setFont(u8g2_font_6x10_tf);
   // Tiny header-safe Q mark: ring plus a short tail.
@@ -824,31 +1042,15 @@ void drawHeader() {
   oled.drawStr(aiMode ? 58 : 54, 10, aiMode ? "AI" : "SYS");
   oled.setDrawColor(1);
 
-  if (connected)
+  if (connected && !activeError)
     oled.drawDisc(80, 6, 2);
   else
     oled.drawCircle(80, 6, 2);
 
   oled.drawStr(85, 10, statusText);
-  for (int i = 0; i < totalPages; ++i) {
-    const int x = 110 + i * 4;
-    if (i == page)
-      oled.drawBox(x, 4, 3, 3);
-    else
-      oled.drawFrame(x, 4, 3, 3);
-  }
+  const String pageLabel = String(page + 1) + "/" + String(activePageCount());
+  oled.drawStr(110, 10, pageLabel.c_str());
   oled.drawHLine(0, 14, 128);
-}
-
-void drawMiniChart(const char *label, const String &value, const GraphHistory &history, int x) {
-  const int percent = percentValue(value);
-  const String displayValue = percent < 0 ? String("--") : String(value + "%");
-  oled.drawFrame(x, 19, 62, 43);
-  oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(x + 5, 29, label);
-  const int valueWidth = oled.getStrWidth(displayValue.c_str());
-  oled.drawStr(x + 57 - valueWidth, 29, displayValue.c_str());
-  drawLineChart(history, x + 4, 33, 54, 24);
 }
 
 void drawMetricPage(
@@ -879,7 +1081,14 @@ void drawMetricPage(
     drawLineChart(history, 2, 47, 77, 14);
     oled.setFont(u8g2_font_6x10_tf);
     oled.drawStr(86, 51, sideLabel);
-    oled.drawStr(86, 62, sideValue.c_str());
+    int sideWidth = oled.getStrWidth(sideValue.c_str());
+    int sideX = 127 - sideWidth;
+    if (sideX < 86) {
+      oled.setFont(u8g2_font_5x7_tf);
+      sideWidth = oled.getStrWidth(sideValue.c_str());
+      sideX = 127 - sideWidth;
+    }
+    oled.drawStr(sideX < 86 ? 86 : sideX, 61, sideValue.c_str());
   } else {
     drawLineChart(history, 2, 47, 124, 15);
   }
@@ -893,7 +1102,8 @@ void drawQuotaPage(
 ) {
   const int percent = percentValue(value);
   const bool lowWarning = percent >= 0 && percent <= LOW_QUOTA_THRESHOLD;
-  drawMetricPage(title, value, history, "RESET", reset.length() ? reset : String("--"), lowWarning);
+  drawMetricPage(title, percent < 0 ? String("--") : String(value), history,
+                 "RESET", reset.length() ? reset : String("--"), lowWarning);
 }
 
 void drawTokenPage(
@@ -907,42 +1117,101 @@ void drawTokenPage(
 
   drawMetricValue(value, 48);
 
-  oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0, 63, footerLabel);
-  oled.drawStr(54, 63, footerValue.c_str());
+  drawFooterPair(footerLabel, footerValue);
 }
 
-void drawAIOverview() {
-  oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0, 24, "TOKENS TODAY");
-  drawMetricValue(ai.today, 44);
-
-  const int fiveHour = percentValue(ai.fiveHour);
-  const int weekly = percentValue(ai.weekly);
-  const String fiveLabel = fiveHour < 0 ? String("--") : String(ai.fiveHour + "%");
-  const String weekLabel = weekly < 0 ? String("--") : String(ai.weekly + "%");
-
-  oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0, 55, "5H");
-  drawLineChart(fiveHourHistory, 20, 48, 67, 8);
-  oled.drawStr(94, 55, fiveLabel.c_str());
-  oled.drawStr(0, 63, "WK");
-  drawLineChart(weeklyHistory, 20, 56, 67, 8);
-  oled.drawStr(94, 63, weekLabel.c_str());
-}
-
-void drawSystemOverview() {
-  drawMiniChart("CPU", sys.cpu, cpuHistory, 1);
-  drawMiniChart("RAM", sys.ram, ramHistory, 65);
-}
-
-void drawOfflineScreen(bool codexUnavailable) {
+void drawTrendPage(const char *title, const GraphHistory &history, const char *footerLabel, const String &footerValue) {
   oled.setFont(u8g2_font_6x12_tf);
-  drawCentered(codexUnavailable ? "CODEX OFFLINE" : "PC OFFLINE", 32);
+  oled.drawStr(0, 25, title);
+  drawLineChart(history, 2, 29, 124, 22);
+
+  drawFooterPair(footerLabel, footerValue);
+}
+
+void drawStreakPage() {
+  oled.setFont(u8g2_font_6x12_tf);
+  drawCentered("CODEX STREAKS", 25);
+  oled.drawVLine(64, 31, 29);
+
+  const String current = ai.currentStreak == "--" ? String("--") : String(ai.currentStreak + "d");
+  const String best = ai.bestStreak == "--" ? String("--") : String(ai.bestStreak + "d");
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(15, 38, "CURRENT");
+  oled.drawStr(80, 38, "BEST");
+
+  oled.setFont(u8g2_font_logisoso16_tf);
+  int currentWidth = oled.getStrWidth(current.c_str());
+  int bestWidth = oled.getStrWidth(best.c_str());
+  if (currentWidth > 60 || bestWidth > 60)
+    oled.setFont(u8g2_font_6x12_tf);
+  currentWidth = oled.getStrWidth(current.c_str());
+  bestWidth = oled.getStrWidth(best.c_str());
+  oled.drawStr((64 - currentWidth) / 2, 59, current.c_str());
+  oled.drawStr(64 + (64 - bestWidth) / 2, 59, best.c_str());
+  oled.setFont(u8g2_font_6x10_tf);
+}
+
+void drawInfoPage(const char *title, const String &value, const char *footerLabel, const String &footerValue) {
+  oled.setFont(u8g2_font_6x12_tf);
+  drawCentered(title, 25);
+  drawMetricValue(value, 49);
+  drawFooterPair(footerLabel, footerValue);
+}
+
+void drawNetworkColumn(const char *label, String value, const GraphHistory &history, int x) {
+  if (value != "--")
+    value += "/s";
+  oled.setFont(u8g2_font_6x10_tf);
+  oled.drawStr(x + 3, 32, label);
+  oled.setFont(u8g2_font_6x12_tf);
+  int width = oled.getStrWidth(value.c_str());
+  if (width > 58) {
+    oled.setFont(u8g2_font_6x10_tf);
+    width = oled.getStrWidth(value.c_str());
+  }
+  oled.drawStr(x + (60 - width) / 2, 47, value.c_str());
+  oled.setFont(u8g2_font_6x10_tf);
+  drawLineChart(history, x, 49, 62, 14);
+}
+
+void drawNetworkPage() {
+  oled.setFont(u8g2_font_6x10_tf);
+  drawCentered("NETWORK RATE", 23);
+  drawNetworkColumn("DOWNLOAD", sys.download, downloadHistory, 1);
+  drawNetworkColumn("UPLOAD", sys.upload, uploadHistory, 65);
+}
+
+void drawLinkPage() {
+  oled.setFont(u8g2_font_6x12_tf);
+  drawCentered("CHATGPT HTTPS", 25);
+  String status = sys.web == "OK" ? String("REACHABLE")
+    : (sys.web == "NO" ? String("NO ROUTE") : String("CHECKING"));
+  drawCentered(status.c_str(), 47);
+  oled.drawHLine(10, 51, 108);
+
+  const String power = sys.battery == "--"
+    ? String("BAT --")
+    : String("BAT " + sys.battery + "%" + (sys.ac == "ON" ? " AC" : ""));
+  oled.setFont(u8g2_font_5x7_tf);
+  oled.drawStr(1, 61, (String("UP ") + sys.uptime).c_str());
+  const int width = oled.getStrWidth(power.c_str());
+  oled.drawStr(127 - width, 61, power.c_str());
+}
+
+void drawOfflineScreen(bool codexUnavailable, bool connecting) {
+  oled.setFont(u8g2_font_6x12_tf);
+  const char *title = connecting
+    ? (aiMode ? "CONNECTING CODEX" : "CONNECTING PC")
+    : (codexUnavailable ? "CODEX OFFLINE" : "PC OFFLINE");
+  drawCentered(title, 32);
   oled.drawHLine(22, 37, 84);
   oled.setFont(u8g2_font_6x10_tf);
-  drawCentered(codexUnavailable ? "No usage data" : "Waiting for QUARK", 48);
-  drawCentered(codexUnavailable ? "Check Codex login" : "companion...", 59);
+  if (connecting) {
+    drawCentered("Checking the selected feed", 50);
+  } else {
+    drawCentered(codexUnavailable ? "No usage data" : "Waiting for QUARK", 48);
+    drawCentered(codexUnavailable ? "Check Codex login" : "companion...", 59);
+  }
 }
 
 void drawDisplay() {
@@ -950,8 +1219,13 @@ void drawDisplay() {
   drawHeader();
 
   const bool connected = aiMode ? aiConnected() : systemConnected();
+  if (modeConnectionGraceActive()) {
+    drawOfflineScreen(false, true);
+    oled.sendBuffer();
+    return;
+  }
   if (!connected) {
-    drawOfflineScreen(aiMode && systemConnected());
+    drawOfflineScreen(aiMode && systemConnected(), false);
     oled.sendBuffer();
     return;
   }
@@ -959,32 +1233,37 @@ void drawDisplay() {
   if (aiMode) {
     switch (page) {
       case 0:
-        drawAIOverview();
-        break;
-
-      case 1:
         drawTokenPage("TOKENS TODAY", ai.today, "LIFETIME", ai.lifetime);
         break;
 
-      case 2: {
+      case 1:
+        drawTrendPage("7D TOKENS (REL)", dailyTokenHistory, "PEAK 7D", ai.peak);
+        break;
+
+      case 2:
         drawQuotaPage("5-HOUR LEFT", ai.fiveHour, ai.fiveReset, fiveHourHistory);
         break;
-      }
 
-      case 3: {
+      case 3:
         drawQuotaPage("WEEKLY LEFT", ai.weekly, ai.weekReset, weeklyHistory);
         break;
-      }
+
+      case 4:
+        drawStreakPage();
+        break;
+
+      case 5:
+        drawInfoPage("LONGEST TURN", ai.longestTurn, "APP SERVER", "CODEX");
+        break;
     }
   } else {
     switch (page) {
-      case 0: {
-        drawSystemOverview();
+      case 0:
+        drawMetricPage("CPU LOAD", sys.cpu, cpuHistory, "FREQ", sys.frequency, false);
         break;
-      }
 
       case 1:
-        drawMetricPage("CPU LOAD", sys.cpu, cpuHistory, "", String(""), false);
+        drawMetricPage("MEMORY USED", sys.ram, ramHistory, "FREE", sys.memoryFree, false);
         break;
 
       case 2: {
@@ -996,7 +1275,19 @@ void drawDisplay() {
       }
 
       case 3:
-        drawMetricPage("RAM USED", sys.ram, ramHistory, "", String(""), false);
+        drawMetricPage("VRAM USED", sys.vram, vramHistory, "", String(""), false);
+        break;
+
+      case 4:
+        drawMetricPage("DISK USED", sys.disk, diskHistory, "FREE", sys.diskFree, false);
+        break;
+
+      case 5:
+        drawNetworkPage();
+        break;
+
+      case 6:
+        drawLinkPage();
         break;
     }
   }
@@ -1023,13 +1314,14 @@ void updateMode() {
   lastMode = reading;
   page = 0;
   waitingRefresh = false;
+  modeActivatedAt = millis();
+  connectionCandidateAt = 0;
+  acknowledgePlayedForMode = false;
 
   if (aiMode) {
     Serial.println("MODE|AI");
-    toneFor(1800, 45, 0);
   } else {
     Serial.println("MODE|SYS");
-    toneFor(2300, 45, 0);
   }
 
   updateStatusLED();
@@ -1069,7 +1361,7 @@ void updateButton() {
     return;
   }
 
-  page = (page + 1) % totalPages;
+  page = (page + 1) % activePageCount();
   toneFor(2100, 25, 0);
   drawDisplay();
 }
@@ -1137,6 +1429,9 @@ lastMode =
     aiMode;
   lastModeReading = aiMode;
   modeDebounceStarted = millis();
+  modeActivatedAt = millis();
+  connectionCandidateAt = 0;
+  acknowledgePlayedForMode = false;
 
 updateStatusLED();
 
@@ -1158,6 +1453,7 @@ void loop() {
   updateButton();
 
   updateMode();
+  updateConnectionAcknowledgement();
 
 // If laptop never replies to a manual refresh,
   // leave BUSY mode after five seconds.
