@@ -5,7 +5,7 @@ These are suggested future tasks, not commitments or implemented functionality.
 ## Near term
 
 - Decide and document the intended license before advertising QUARK as open source or accepting redistributed builds.
-- Recheck hosted CI after the firmware runner pin; update the Arduino CLI setup action when upstream provides a Node.js 24-compatible release.
+- Update the Arduino CLI setup action when upstream provides a Node.js 24-compatible release; rerun CI after toolchain or dependency changes.
 - Run and record a physical acceptance checklist: SuperMini fit, USB CDC handshake, each switch/button action, each OLED page, red/blue states, and one acknowledgement chime per stable connection.
 - Add an opt-in hardware-in-the-loop serial test fixture if the device is regularly available.
 - Reconcile the source version string (`1.2.0`) with the next published release and attach build provenance to that release.
