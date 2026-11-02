@@ -39,7 +39,7 @@ The source identifies itself as version `1.2.0`; the latest published release re
 - Firmware: ESP32-C3 compile passed in hosted CI after the serial boundary changes. Current run details are linked from [verification.md](verification.md).
 - CAD: KiCad CLI 10.0.7 reported zero included ERC/DRC violations, zero unconnected items, and zero schematic-parity issues. Four ERC and seven DRC checks were ignored and remain disclosed.
 - Documentation: relative Markdown targets and repository text policy passed the local checker. It does not verify external URLs or anchors.
-- Privacy: the text checker found no account-specific Windows profile path in the checked repository text. A scan of the prior 20 commits found no profile path pattern. No secret scanner was run.
+- Privacy: the text checker found no account-specific Windows profile path in the checked repository text. The branch history scan found no profile path pattern. No secret scanner was run.
 
 ## Remaining limitations
 

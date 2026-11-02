@@ -12,7 +12,7 @@
 | NFR-02 PC telemetry survives Codex failure | Separate Codex polling worker and system loop | Source review only; no long-duration outage test | Implemented; integration behavior unverified |
 | NFR-03 bounded polling | `SYSTEM_INTERVAL`, `CODEX_INTERVAL`, retry limits | Source review | Implemented; runtime timing not measured |
 | NFR-04 unavailable optional data is non-fatal | Collector fallbacks and parser defaults | Unit tests for malformed and absent values | Partially verified |
-| NFR-05 repeatable local build | Pinned Python dependencies, scripts, CI workflow | `scripts/verify.ps1`; hosted CI runs 41468741407 and 41469042013 | Local Windows package and hosted package/firmware builds verified |
+| NFR-05 repeatable local build | Pinned Python dependencies, scripts, CI workflow | `scripts/verify.ps1`; hosted CI runs 41468741407 and 41471339179 | Local Windows package and hosted package/firmware builds verified |
 | NFR-06 malformed serial input | Strict ASCII decoding, exact command whitelist, firmware line collector | Unit tests for non-ASCII, control bytes, embedded newline, and unknown commands | Unit/build verified; physical fault injection untested |
 | NFR-07 App Server response dispatch | `_is_jsonrpc_response`, `CodexAppServer._stdout_reader` | Unit tests for responses, notifications, and server requests | Unit verified; live App Server integration untested |
 | NFR-08 canonical local checks | `scripts/verify.ps1`, `scripts/check_docs.py` | Full local Windows verification and CI documentation checker | Local verified; external URLs and anchors are outside the check |
