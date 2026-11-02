@@ -28,7 +28,7 @@ QUARK is a small hybrid desktop/embedded engineering prototype. The reviewed sou
 - ESP32-C3 firmware: compile passed; 370,044 bytes application flash and 17,304 bytes global RAM.
 - KiCad CLI 10.0.7: ERC 0 included violations; PCB DRC 0 included violations, 0 unconnected items, 0 parity issues. Reports also list ignored checks.
 - Personal-path scan: no account-specific absolute path was found in the working tree outside `.git`; the searched commit history also had no match.
-- The new GitHub Actions workflow has not yet been observed running on GitHub.
+- The first GitHub Actions run (41426096332) passed both jobs. The firmware runner is now pinned to Ubuntu 24.04 and needs one follow-up run; the action emitted a Node.js 20-to-24 runtime warning.
 
 Details and limitations are in [verification.md](verification.md). No live Codex session, connected hardware, long-duration run, or physical measurement was used during this audit.
 
@@ -37,13 +37,13 @@ Details and limitations are in [verification.md](verification.md). No live Codex
 Scale: **1** = source exists with limited repeatable checks; **2** = local tests/builds and evidence are repeatable; **3** = hosted CI is green and a hardware acceptance run is recorded; **4** = releases have reproducible provenance and measured bench results; **5** = stable field validation and maintenance practice.
 
 - **Initial: 1/5.** Source, tests, and hardware outputs existed, but repeatability and evidence boundaries were underdocumented.
-- **After changes: 2/5.** Local tests, firmware/package builds, and CAD reports are recorded, dependencies are pinned, and CI is configured. Hosted CI and physical acceptance evidence are still pending.
+- **After changes: 2/5.** Local tests, firmware/package builds, and CAD reports are recorded, dependencies are pinned, and both jobs passed once on hosted CI. Physical acceptance evidence is still pending, and the Ubuntu 24.04 runner pin needs a hosted rerun.
 
 This score is an engineering readiness summary, not a scientific or industry certification.
 
 ## Remaining maintainer decisions
 
 1. Choose and add the intended license before inviting reuse or redistribution.
-2. Observe the first hosted CI run and repair environment-specific failures if any.
+2. Confirm hosted CI after the Ubuntu 24.04 runner pin, and watch for an upstream Arduino setup action release that removes the Node.js runtime warning.
 3. Run the physical acceptance checklist in [roadmap.md](roadmap.md) and record actual results.
 4. Decide whether to publish the current 1.2.0 source as a release, with artifact hashes and build provenance.

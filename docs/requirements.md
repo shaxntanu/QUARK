@@ -51,5 +51,5 @@ The intended user is a Windows developer who has the Codex CLI installed and sig
 1. Keep every emitted serial packet within the 160-byte line limit; verified by regression tests.
 2. Build the Windows companion executable from the source; verified locally on Windows 11 with Python 3.12.10 and PyInstaller 6.22.3.
 3. Compile the ESP32-C3 firmware for the configured CDC-on-boot target; verified locally with Arduino core 3.3.10 and U8g2 2.36.19.
-4. Keep unit tests and compile checks runnable from a clean checkout; a GitHub Actions workflow is added, but its hosted result must be observed after push.
+4. Keep unit tests and compile checks runnable from a clean checkout; the first hosted GitHub Actions run passed both jobs, and the firmware runner is pinned to Ubuntu 24.04 for the next run.
 5. Preserve honest validation boundaries: no physical result is claimed without a fresh hardware test.

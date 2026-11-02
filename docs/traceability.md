@@ -12,6 +12,6 @@
 | NFR-02 PC telemetry survives Codex failure | Separate Codex polling worker and system loop | Source review only; no long-duration outage test | Implemented; integration behavior unverified |
 | NFR-03 bounded polling | `SYSTEM_INTERVAL`, `CODEX_INTERVAL`, retry limits | Source review | Implemented; runtime timing not measured |
 | NFR-04 unavailable optional data is non-fatal | Collector fallbacks and parser defaults | Unit tests for malformed and absent values | Partially verified |
-| NFR-05 repeatable local build | Pinned Python dependencies, scripts, CI workflow | Local Windows package and firmware builds; workflow awaits hosted run | Local builds verified; hosted CI pending |
+| NFR-05 repeatable local build | Pinned Python dependencies, scripts, CI workflow | Local Windows package and firmware builds; first hosted run 41426096332 passed both jobs; firmware runner now pinned to Ubuntu 24.04 | Local and first hosted run verified; confirm the runner pin on the next run |
 
 “Implemented” describes source behavior. It does not imply a successful physical or live-service test; those are explicitly marked above.
