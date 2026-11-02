@@ -42,6 +42,7 @@ The project is an engineering prototype and personal telemetry utility. It does 
 - [Dependency inventory](docs/sbom.md)
 - [KiCad workflow research notes](docs/research-notes.md)
 - [Repository audit summary](docs/audit.md)
+- [Verification script](scripts/verify.ps1) and [documentation checker](scripts/check_docs.py)
 
 The HTTPS indicator only checks whether the computer can open a TCP connection to `chatgpt.com` on port 443. It helps distinguish a general network problem from a Codex App Server problem; it does not prove that Codex authentication or usage requests are working.
 
@@ -140,11 +141,13 @@ arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc .
 
 ## Development
 
-Run the Python regression suite with Python 3.12:
+Run the canonical Windows verification workflow with Python 3.12:
 
 ```powershell
-py -3.12 -m unittest discover -s tests -v
+.\scripts\verify.ps1
 ```
+
+To include a local ESP32-C3 firmware compile, install Arduino CLI, the ESP32 core and U8g2, then run `.scriptserify.ps1 -IncludeFirmware`. KiCad ERC/DRC checks use the commands in the hardware README and are not part of the default script.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the repeatable build and review workflow, and [SECURITY.md](SECURITY.md) for vulnerability reporting. Citations for version 1.2.0 are described in [CITATION.cff](CITATION.cff). The project has no declared license yet.
 

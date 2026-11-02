@@ -33,6 +33,9 @@ jobs:
       - name: Compile Python source
         run: python -m compileall -q quark.py tests
 
+      - name: Check documentation and repository paths
+        run: python scripts/check_docs.py
+
       - name: Build Windows executable
         shell: pwsh
         run: .\scripts\build_exe.ps1
