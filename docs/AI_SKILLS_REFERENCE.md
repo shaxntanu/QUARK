@@ -30,3 +30,17 @@ This registry records the skills and specialized repositories named by the repos
 | Visualization skill | Codex built-in skill `visualize` | Create interactive visualizations when they materially improve understanding. | Available in the Codex skill catalog; not used because the hardware architecture is sufficiently covered by Mermaid and the static Anatomy figure. | No extra visualization artifact. |
 
 Repository lookup failures are recorded as such. A skill being listed here is not a dependency, endorsement, or claim that its output was independently validated.
+
+## Token-efficient agent stack
+
+These five projects were supplied in the follow-up workflow prompt. Their GitHub repository URLs were checked through the GitHub API on 2026-11-02. No project was installed, configured, or integrated, so its installation instructions were not used. No measurable token or cost reduction is claimed.
+
+| Project | Official repository | Availability in this agent session | Applied fallback |
+|---|---|---|---|
+| Ponytail | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | No matching active tool or command found. | Applied its minimal-solution review manually. No further code or dependencies were added after the audit passed. |
+| Lean Coding Agent | [JeremyFaubert/lean-coding-agent-skill](https://github.com/JeremyFaubert/lean-coding-agent-skill) | No matching active skill or command found. | Used targeted file ranges, bounded outputs, and risk-based validation. |
+| Serena | [oraios/serena](https://github.com/oraios/serena) | No Serena MCP tool or command found. | Used native exact search, Git diffs, and direct reads of relevant files. |
+| skill-search | [sowhan/skill-search](https://github.com/sowhan/skill-search) | No matching active skill or command found. | Used the native skill catalog and loaded no unrelated skill descriptions. |
+| Token Optimizer MCP | [ooples/token-optimizer-mcp](https://github.com/ooples/token-optimizer-mcp) | No matching active MCP tool found. | Bounded tool output and summarized relevant results. No large log or API payload required compression. |
+
+The fallback policies come from the supplied prompt. They were applied without copying upstream code or installing new tooling into QUARK.

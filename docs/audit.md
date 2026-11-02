@@ -23,6 +23,7 @@ The source identifies itself as version `1.2.0`; the latest published release re
 | Embedded firmware and serial interface | Activated | Boundary tests and hosted ESP32-C3 compile; no physical hardware result. |
 | PCB and electronics | Activated | KiCad ERC/DRC evidence and a hardware reference ledger; exact purchased clone parts remain unknown. |
 | Supply chain and CI | Activated | Direct dependency pins, action SHA pins, read-only workflow token, and Dependabot update configuration. Dependabot alerts are disabled for this repository. |
+| Token-efficient agent stack | Fallback applied | None of the five named tools was present in the active tool list or command path. Targeted retrieval and manual minimization were used without adding dependencies. |
 | Advanced testing | Partially activated | Malformed and boundary cases are covered. Fuzzing, mutation testing, hardware fault injection, and concurrency stress were not performed. |
 | Research evidence | Partially activated | Crawl4AI 0.9.5 and official documentation informed targeted decisions. Some pages and a datasheet PDF could not be retrieved. |
 | Performance and observability | Partially activated | Existing rotating logs, polling intervals, and retry bounds were reviewed. No profiling or benchmark was performed. |
