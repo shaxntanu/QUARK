@@ -8,7 +8,11 @@ ESP32-C3 · 128×64 OLED · USB serial · Windows companion
 
 </div>
 
+[![CI](https://github.com/shaxntanu/QUARK/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shaxntanu/QUARK/actions/workflows/ci.yml)
+
 QUARK pairs an ESP32-C3 SuperMini with a monochrome OLED. A lightweight Windows companion reads local PC metrics and Codex App Server usage, then sends them to the device over USB. A physical switch selects Codex or system pages; a button advances pages or requests a refresh.
+
+![Anatomy-style system illustration of the Windows companion, USB serial link, ESP32-C3 carrier, OLED, mode switch, LEDs, and piezo](docs/anatomy/quark-system.svg)
 
 ## At a glance
 
@@ -17,6 +21,27 @@ QUARK pairs an ESP32-C3 SuperMini with a monochrome OLED. A lightweight Windows 
 - **OLED:** one clear metric or a pair of related readings per page, with line charts for changing values.
 - **Connection:** USB reconnects automatically. A brief connection chime plays once after the selected feed is stable; temporary Codex errors keep the last readings visible until they age out.
 - **Status LEDs:** blue for a healthy selected feed, red for offline/error, and red plus blue while connecting or refreshing. The faulty green channel is unused.
+
+## Project status
+
+The repository contains a Windows companion, ESP32-C3 firmware, KiCad source, and fabrication exports. The companion and firmware source identify themselves as version 1.2.0; the latest published GitHub release is `v1.1.0`. This audit rebuilt the software and checked the CAD files, but did not perform a new hardware-in-the-loop session.
+
+The project is an engineering prototype and personal telemetry utility. It does not claim research novelty or measured performance results. No `LICENSE` file is present, so reuse and redistribution terms have not been specified.
+
+## Engineering docs
+
+- [Architecture and interfaces](docs/architecture.md)
+- [Requirements and scope](docs/requirements.md)
+- [Data collection methodology](docs/methodology.md)
+- [Hardware integration](docs/hardware.md)
+- [Verification evidence](docs/verification.md)
+- [Traceability matrix](docs/traceability.md)
+- [Security notes](docs/security.md)
+- [Limitations](docs/limitations.md) and [roadmap proposals](docs/roadmap.md)
+- [Decision records](docs/decisions/)
+- [Dependency inventory](docs/sbom.md)
+- [KiCad workflow research notes](docs/research-notes.md)
+- [Repository audit summary](docs/audit.md)
 
 The HTTPS indicator only checks whether the computer can open a TCP connection to `chatgpt.com` on port 443. It helps distinguish a general network problem from a Codex App Server problem; it does not prove that Codex authentication or usage requests are working.
 
@@ -111,4 +136,26 @@ With Arduino CLI and the required ESP32 core and U8g2 library installed:
 
 ```powershell
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc .
+```
+
+## Development
+
+Run the Python regression suite with Python 3.12:
+
+```powershell
+py -3.12 -m unittest discover -s tests -v
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the repeatable build and review workflow, and [SECURITY.md](SECURITY.md) for vulnerability reporting. Citations for version 1.2.0 are described in [CITATION.cff](CITATION.cff). The project has no declared license yet.
+
+## Repository layout
+
+```text
+QUARK.ino                         ESP32-C3 firmware and OLED UI
+quark.py                          Windows telemetry/Codex companion
+tests/test_quark.py               Python unit and protocol regression tests
+scripts/                          Windows packaging and startup scripts
+hardware/QUARK_SuperMini_Carrier/ KiCad design, BOM, and fabrication files
+docs/                             Architecture, verification, security, and audit docs
+.github/                          CI and dependency update configuration
 ```

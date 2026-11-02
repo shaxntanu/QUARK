@@ -38,7 +38,7 @@ The `fabrication/` folder contains copper, solder-mask, silkscreen, paste, and o
 
 ## Validation
 
-The checked-in design was exported with KiCad CLI. ERC reports zero schematic violations; PCB DRC reports zero violations, zero unconnected items, and zero schematic-parity issues. Re-run checks after edits with KiCad 10:
+The checked-in design was checked with KiCad CLI 10.0.7. The 2026-11-02 reports contain zero included ERC/DRC violations, zero unconnected items, and zero schematic-parity issues. They also have 4 ERC checks and 7 DRC checks explicitly ignored; see [`docs/verification.md`](../../docs/verification.md) for the exact list. Zero included violations is not a complete manufacturing or assembly certification. Re-run checks after edits with KiCad 10:
 
 ```powershell
 kicad-cli sch erc QUARK_SuperMini_Carrier.kicad_sch

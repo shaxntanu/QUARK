@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use QUARK, please cite the versioned software repository."
+type: software
+title: "QUARK: Codex Usage and PC Telemetry Display"
+authors:
+  - name: Shantanu
+version: 1.2.0
+repository-code: "https://github.com/shaxntanu/QUARK"
+url: "https://github.com/shaxntanu/QUARK"
