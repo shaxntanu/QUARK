@@ -367,7 +367,11 @@ def format_system_packet(data):
 
 def parse_esp_command(line):
     """Return a recognized firmware command, ignoring arbitrary serial text."""
-    command = str(line or "").strip()
+    command = str(line or "").rstrip("\r\n")
+    if "\r" in command or "\n" in command:
+        return None
+    if any(ord(character) < 32 or ord(character) > 126 for character in command):
+        return None
     if command in {
         "PING",
         "REFRESH|AI",
@@ -379,6 +383,16 @@ def parse_esp_command(line):
     }:
         return command
     return None
+
+
+def _is_jsonrpc_response(message):
+    """Accept only JSON-RPC responses that can satisfy a pending request."""
+    return (
+        isinstance(message, dict)
+        and "id" in message
+        and "method" not in message
+        and ("result" in message or "error" in message)
+    )
 
 
 # ============================================================
@@ -412,9 +426,12 @@ def _probe_quark_port(device_name, timeout=4.0):
             while time.monotonic() < deadline:
                 device.write(b"PING\n")
                 device.flush()
-                raw = device.readline()
+                raw = device.read_until(b"\n", SERIAL_MAX_LINE + 1)
                 if raw.endswith(b"\n") and len(raw) <= SERIAL_MAX_LINE:
-                    command = parse_esp_command(raw.decode("utf-8", errors="ignore"))
+                    try:
+                        command = parse_esp_command(raw.decode("ascii"))
+                    except UnicodeDecodeError:
+                        command = None
                     if command in {"PONG", "QUARK|READY"}:
                         return True
                 time.sleep(0.15)
@@ -773,9 +790,14 @@ class CodexAppServer:
                 if not line:
                     continue
                 try:
-                    self.messages.put(json.loads(line))
+                    message = json.loads(line)
                 except json.JSONDecodeError:
                     logger.debug("Ignoring non-JSON Codex output: %s", line[:300])
+                    continue
+                if _is_jsonrpc_response(message):
+                    self.messages.put(message)
+                elif isinstance(message, dict) and "method" in message:
+                    logger.debug("Ignoring unhandled Codex App Server method: %s", message["method"])
         except (OSError, ValueError) as exc:
             logger.debug("Codex stdout reader stopped: %s", exc)
 
@@ -1146,7 +1168,10 @@ def wait_for_device_handshake(device, port, timeout=8.0):
             raw = device.read_until(b"\n", SERIAL_MAX_LINE + 1)
             if len(raw) > SERIAL_MAX_LINE or not raw.endswith(b"\n"):
                 continue
-            command = parse_esp_command(raw.decode("ascii", errors="ignore"))
+            try:
+                command = parse_esp_command(raw.decode("ascii"))
+            except UnicodeDecodeError:
+                continue
             if command == "PONG":
                 logger.info("QUARK firmware handshake succeeded on %s", port)
                 return
@@ -1197,7 +1222,11 @@ def run_device(port, ai_state, ai_state_lock, refresh_event):
                 if len(raw) > SERIAL_MAX_LINE or not raw.endswith(b"\n"):
                     logger.warning("Dropped malformed or oversized serial input")
                     continue
-                command = parse_esp_command(raw.decode("ascii", errors="ignore"))
+                try:
+                    command = parse_esp_command(raw.decode("ascii"))
+                except UnicodeDecodeError:
+                    logger.warning("Dropped non-ASCII serial input")
+                    continue
                 if command is None:
                     continue
                 logger.info("ESP command: %s", command)

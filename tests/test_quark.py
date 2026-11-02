@@ -118,6 +118,19 @@ class TelemetryTests(unittest.TestCase):
         self.assertEqual(quark.parse_esp_command("REFRESH|SYS\r\n"), "REFRESH|SYS")
         self.assertIsNone(quark.parse_esp_command("untrusted random text"))
 
+    def test_serial_command_parser_rejects_non_ascii_and_control_input(self):
+        self.assertIsNone(quark.parse_esp_command("PI\u200bNG"))
+        self.assertIsNone(quark.parse_esp_command("PING\x01"))
+        self.assertIsNone(quark.parse_esp_command("PING\nMODE|AI"))
+        self.assertIsNone(quark.parse_esp_command(" PING"))
+
+    def test_codex_reader_accepts_only_jsonrpc_responses(self):
+        self.assertTrue(quark._is_jsonrpc_response({"id": 1, "result": {}}))
+        self.assertTrue(quark._is_jsonrpc_response({"id": 1, "error": {"message": "failed"}}))
+        self.assertFalse(quark._is_jsonrpc_response({"method": "account/updated", "params": {}}))
+        self.assertFalse(quark._is_jsonrpc_response({"id": 2, "method": "account/login/start", "params": {}}))
+        self.assertFalse(quark._is_jsonrpc_response({"id": 3, "result": 1, "method": "invalid"}))
+
     def test_full_codex_packet_stays_within_firmware_line_limit(self):
         packet = quark.format_ai_packet({
             "today": "999999999999",
@@ -165,6 +178,26 @@ class TelemetryTests(unittest.TestCase):
     def test_protocol_values_reject_non_ascii_and_control_characters(self):
         self.assertEqual(quark._protocol_value("é"), "--")
         self.assertEqual(quark._protocol_value("two\nlines"), "--")
+
+    def test_packet_builders_stay_bounded_over_varied_input_lengths(self):
+        ai_keys = (
+            "today", "lifetime", "five_remaining", "weekly_remaining",
+            "five_reset", "weekly_reset", "peak_daily", "current_streak",
+            "longest_streak", "longest_turn", "daily_trend",
+        )
+        system_keys = (
+            "cpu", "gpu", "ram", "temp", "vram", "disk", "memory_free",
+            "disk_free", "down", "up", "down_percent", "up_percent", "freq",
+            "uptime", "battery", "ac", "link",
+        )
+        for length in range(0, 513, 17):
+            value = "X" * length
+            with self.subTest(length=length):
+                ai_packet = quark.format_ai_packet({key: value for key in ai_keys})
+                system_packet = quark.format_system_packet({key: value for key in system_keys})
+                for packet in (ai_packet, system_packet):
+                    encoded = packet.encode("ascii") + b"\n"
+                    self.assertLessEqual(len(encoded), quark.SERIAL_MAX_LINE)
 
 
 if __name__ == "__main__":

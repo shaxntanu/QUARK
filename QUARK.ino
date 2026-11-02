@@ -204,7 +204,8 @@ const unsigned long DEBOUNCE_DELAY = 40;
 const unsigned long REFRESH_TIMEOUT = 5000;
 const unsigned long MODE_CONNECT_GRACE = 1500;
 const unsigned long CONNECTION_STABLE_TIME = 400;
-const size_t SERIAL_BUFFER_LIMIT = 160;
+const size_t SERIAL_MAX_LINE_BYTES = 160;  // Includes the newline byte.
+const size_t SERIAL_BUFFER_LIMIT = SERIAL_MAX_LINE_BYTES - 1;  // Payload only.
 const int LOW_QUOTA_THRESHOLD = 15;
 
 // AI is only updated about once/minute.
@@ -892,8 +893,18 @@ void updateSerial() {
       continue;
     }
 
-    if (c == '\r' || serialLineOverflow)
+    if (serialLineOverflow)
       continue;
+
+    if (c == '\r') {
+      if (serialBuffer.length() < SERIAL_BUFFER_LIMIT) {
+        serialBuffer += c;
+      } else {
+        serialBuffer = "";
+        serialLineOverflow = true;
+      }
+      continue;
+    }
 
     if (c < 32 || c > 126) {
       // Protocol is ASCII; discard malformed input through its newline.
