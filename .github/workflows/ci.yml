@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Check dependency consistency
+        run: python -m pip check
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Compile Python source
+        run: python -m compileall -q quark.py tests
+
+      - name: Build Windows executable
+        shell: pwsh
+        run: .\scripts\build_exe.ps1
+
+      - name: Confirm executable exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath .\dist\QUARK.exe -PathType Leaf)) {
+            throw "QUARK.exe was not created"
+          }
+
+  firmware-esp32c3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.5.1
+
+      - name: Install ESP32 core and OLED library
+        run: |
+          arduino-cli core update-index --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core install esp32:esp32@3.3.10 --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli lib install U8g2@2.36.19
+
+      - name: Compile ESP32-C3 firmware
+        run: arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc --output-dir "${RUNNER_TEMP}/quark-firmware" .
