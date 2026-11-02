@@ -4,12 +4,10 @@ QUARK combines a Windows Python companion, ESP32-C3 firmware, and KiCad hardware
 
 ## Local development
 
-1. Install Python 3.12 and the dependencies from `requirements.txt`.
-2. Run `py -3.12 -m unittest discover -s tests -v`.
-3. Run `py -3.12 -m compileall -q quark.py tests`.
-4. For packaging changes, build with `scripts/build_exe.ps1`.
-5. For firmware changes, compile `QUARK.ino` for `esp32:esp32:esp32c3:CDCOnBoot=cdc` with the ESP32 core and U8g2 versions recorded in [verification.md](docs/verification.md).
-6. For schematic/PCB changes, run KiCad ERC and DRC using the commands in the hardware README. Review ignored checks and fabrication outputs as well as included violations.
+1. Install Python 3.12, then run `py -3.12 -m pip install -r requirements.txt -r requirements-build.txt`.
+2. Run `scripts/verify.ps1` from PowerShell. It checks dependencies, unit tests, Python compilation, repository text and Markdown links, and the Windows executable build.
+3. For firmware changes, install Arduino CLI, the ESP32 core, and U8g2 versions recorded in [verification.md](docs/verification.md), then run `scripts/verify.ps1 -IncludeFirmware`.
+4. For schematic/PCB changes, run KiCad ERC and DRC using the commands in the hardware README. Review ignored checks and fabrication outputs as well as included violations.
 
 ## Change expectations
 
@@ -18,5 +16,6 @@ QUARK combines a Windows Python companion, ESP32-C3 firmware, and KiCad hardware
 - Clearly label hardware tests that require the physical board. Do not report them as passed from a source build.
 - Do not commit local build outputs, account data, logs, credentials, personal file paths, or generated KiCad project-local state.
 - Do not change the repository's license without an explicit maintainer decision.
+- Do not add em dashes or account-specific Windows profile paths to repository text.
 
 Open a pull request with a short summary, verification commands/results, and any remaining hardware checks. The repository currently has no separate lint or code-format tool configured.

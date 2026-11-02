@@ -2,48 +2,68 @@
 
 ## Overview
 
-QUARK is a small hybrid desktop/embedded engineering prototype. The reviewed source tree contains the Python Windows companion, ESP32-C3 Arduino firmware, KiCad carrier design and manufacturing exports, packaging/startup scripts, and a Python unit suite. The latest published GitHub release is `v1.1.0`; the companion source identifies itself as `1.2.0`.
+QUARK is a hybrid Windows companion, ESP32-C3 firmware, and KiCad carrier-board project. The Python process collects local PC metrics and Codex usage through the locally installed Codex App Server, then sends bounded ASCII telemetry over USB serial. The firmware selects an OLED page and drives local indicators and controls. The project is a personal engineering prototype, not a research publication or hosted service.
 
-## Findings before this audit
+The source identifies itself as version `1.2.0`; the latest published release remains `v1.1.0`. The repository has no `LICENSE` file, so public visibility does not specify reuse or redistribution terms.
 
-- Core code and hardware existed, but project identity, interfaces, data collection, limitations, verification boundaries, and contributor/security guidance were spread across the README or absent.
-- Direct Python dependencies were not pinned and the repository had no automated test/build workflow or dependency update configuration.
-- The serial limit was enforced at write time, but packet builders could create an overlength `AI` or `SYS` record when many optional metrics were present. The Codex write path could then enter its reconnect/retry path.
-- The hardware README reported zero included violations without listing ignored ERC/DRC checks.
-- No license file was present. No research novelty, measured benchmark, or recent physical validation evidence was present in this audit.
+## Findings and changes
 
-## Changes made
+- The serial input path previously discarded invalid bytes during decoding. The companion now decodes strictly as ASCII, rejects control and embedded line characters, and accepts only known commands. The firmware counts CR bytes against the line limit and discards oversized or invalid input through LF.
+- The App Server reader previously queued unsolicited JSON messages even though the request path consumes only responses. It now queues response objects and ignores method notifications and requests.
+- CI actions are pinned to upstream release commit SHAs. The workflow has read-only contents permission, and Dependabot checks Python and GitHub Actions updates weekly.
+- A local Markdown and text checker validates relative Markdown targets and rejects em dashes and account-specific Windows profile paths in UTF-8 text files. It runs in CI.
+- A Windows verification script runs dependency checks, the Python suite, bytecode compilation, documentation checks, and the executable package build. An optional flag adds the ESP32-C3 compile when Arduino CLI and packages are installed.
+- Added engineering evidence, research sources, hardware references, compatibility, assumptions, failure analysis, generated-artifact provenance, and an AI skill/tool registry. Existing architecture, requirements, methodology, security, limitations, traceability, SBOM, and roadmap documents were updated to match the implementation.
 
-- Bounded ASCII packet construction to the shared 160-byte complete-line limit and added regression tests for worst-case values, controls/non-ASCII input, and seven-day normalization.
-- Added architecture, requirements, methodology, hardware integration, verification, security, traceability, SBOM inventory, roadmap, limitations, research notes, and two current-state ADRs.
-- Added a static Anatomy-style system figure based on the implemented host/USB/ESP32/OLED/control path and referenced it from the README.
-- Pinned direct Python dependencies, added Windows test/package and ESP32-C3 compile jobs, and enabled weekly Dependabot updates.
-- Clarified that the CAD reports ignore 4 ERC checks and 7 DRC checks.
-- Added contributor, security, citation, and changelog metadata without selecting a license or creating a new release.
+## Applicable capability gates
 
-## Verification evidence
+| Gate | Status | Evidence or reason |
+|---|---|---|
+| Windows software and packaging | Activated | Unit tests, one-file executable build, and Windows CI. |
+| Embedded firmware and serial interface | Activated | Boundary tests and hosted ESP32-C3 compile; no physical hardware result. |
+| PCB and electronics | Activated | KiCad ERC/DRC evidence and a hardware reference ledger; exact purchased clone parts remain unknown. |
+| Supply chain and CI | Activated | Direct dependency pins, action SHA pins, read-only workflow token, and Dependabot update configuration. Dependabot alerts are disabled for this repository. |
+| Advanced testing | Partially activated | Malformed and boundary cases are covered. Fuzzing, mutation testing, hardware fault injection, and concurrency stress were not performed. |
+| Research evidence | Partially activated | Crawl4AI 0.9.5 and official documentation informed targeted decisions. Some pages and a datasheet PDF could not be retrieved. |
+| Performance and observability | Partially activated | Existing rotating logs, polling intervals, and retry bounds were reviewed. No profiling or benchmark was performed. |
+| Accessibility | Partially applicable | The device has a monochrome OLED, tactile input, and LEDs. No formal accessibility standard applies or was evaluated; physical controls and OLED use remain untested. |
+| Documentation-as-code | Activated | Local Markdown links, em dashes, and profile-specific paths are checked by a local script and CI. External links and anchors are not automatically validated. |
+| Artifact provenance and compatibility | Activated | Generated outputs and tested versus untested platforms are listed in dedicated records. |
+| SDG, scientific novelty, and benchmark claims | Skipped | No evidence supports an impact, novelty, or comparative performance claim. |
+| Web dashboard, cloud service, ML, ManimGX animation | Skipped | These capabilities are not part of the implemented project. A static SVG and Mermaid diagram are sufficient. |
 
-- Python suite: 14/14 tests passed; `compileall` passed; `pip check` passed.
-- Windows one-file package: built locally, 9,839,344 bytes.
-- ESP32-C3 firmware: compile passed; 370,044 bytes application flash and 17,304 bytes global RAM.
-- KiCad CLI 10.0.7: ERC 0 included violations; PCB DRC 0 included violations, 0 unconnected items, 0 parity issues. Reports also list ignored checks.
-- Personal-path scan: no account-specific absolute path was found in the working tree outside `.git`; the searched commit history also had no match.
-- GitHub Actions runs 41426096332 and 41426685086 passed both jobs; the second run verified the firmware runner pinned to Ubuntu 24.04. The Arduino setup action still emits a Node.js 20-to-24 runtime warning.
+## Verification summary
 
-Details and limitations are in [verification.md](verification.md). No live Codex session, connected hardware, long-duration run, or physical measurement was used during this audit.
+- Python 3.12.10: 17 unit tests passed; `compileall` and `pip check` passed.
+- Windows package: `QUARK.exe` built successfully at 9,840,202 bytes; it was not launched in an interactive user session.
+- Firmware: ESP32-C3 compile passed in hosted CI after the serial boundary changes. Current run details are linked from [verification.md](verification.md).
+- CAD: KiCad CLI 10.0.7 reported zero included ERC/DRC violations, zero unconnected items, and zero schematic-parity issues. Four ERC and seven DRC checks were ignored and remain disclosed.
+- Documentation: relative Markdown targets and repository text policy passed the local checker. It does not verify external URLs or anchors.
+- Privacy: the text checker found no account-specific Windows profile path in the checked repository text. A scan of the prior 20 commits found no profile path pattern. No secret scanner was run.
+
+## Remaining limitations
+
+- No fresh hardware-in-the-loop run, physical display check, LED check, button/switch test, buzzer test, electrical measurement, fit check, or long-duration run was performed.
+- No live signed-in Codex App Server session or network-interruption test was performed.
+- Exact SuperMini, OLED, LED, piezo, and other generic BOM part numbers are not known.
+- No measured latency, throughput, power, thermal, RF/EMC, reliability, or user-study results are published.
+- No transitive dependency lockfile, full vulnerability scan, CodeQL workflow, secret-scanning workflow, signed firmware, or build attestation exists.
+- The checked-in merged firmware image was not reproduced bit-for-bit by a previous local build.
+- The project has no license and source version `1.2.0` has not been published as a release.
 
 ## Maturity assessment
 
-Scale: **1** = source exists with limited repeatable checks; **2** = local tests/builds and evidence are repeatable; **3** = hosted CI is green and a hardware acceptance run is recorded; **4** = releases have reproducible provenance and measured bench results; **5** = stable field validation and maintenance practice.
+Scale: **1** means source exists with limited repeatable checks; **2** means local tests/builds and evidence are repeatable; **3** means hosted CI is green and a hardware acceptance run is recorded; **4** means releases have reproducible provenance and measured bench results; **5** means stable field validation and maintenance practice.
 
-- **Initial: 1/5.** Source, tests, and hardware outputs existed, but repeatability and evidence boundaries were underdocumented.
-- **After changes: 2/5.** Local tests, firmware/package builds, and CAD reports are recorded, dependencies are pinned, and both hosted jobs passed twice. Physical acceptance evidence is still pending.
+- **Initial: 1/5.** Source, tests, and hardware outputs existed, but repeatability and evidence boundaries needed improvement.
+- **After this audit: 2/5.** Local tests, package build, firmware CI, CAD evidence, documentation checks, and source records are repeatable. Physical acceptance evidence is pending.
 
-This score is an engineering readiness summary, not a scientific or industry certification.
+The score is a project readiness summary, not a certification.
 
-## Remaining maintainer decisions
+## Recommended maintainer actions
 
-1. Choose and add the intended license before inviting reuse or redistribution.
-2. Watch for an upstream Arduino setup action release that removes the Node.js runtime warning, and rerun CI after toolchain or dependency updates.
-3. Run the physical acceptance checklist in [roadmap.md](roadmap.md) and record actual results.
-4. Decide whether to publish the current 1.2.0 source as a release, with artifact hashes and build provenance.
+1. Identify the exact SuperMini and OLED modules before ordering a production batch.
+2. Run and record the physical acceptance checklist in [roadmap.md](roadmap.md).
+3. Decide and add the intended license.
+4. Review action and dependency updates as Dependabot proposes them; use an external vulnerability scanner if maintaining public releases.
+5. Reconcile source version `1.2.0` with a future release and publish checksums and provenance if binaries are distributed.

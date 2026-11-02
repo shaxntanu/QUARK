@@ -10,7 +10,7 @@ The reachability indicator opens a TCP connection to `chatgpt.com:443` with a tw
 
 ## Codex usage
 
-The companion starts `codex app-server` as a child process and exchanges JSON-RPC messages through standard input/output. It requests token usage and rate limits, selects the Codex limit snapshot, derives daily counts/streak summaries, and normalizes seven daily token buckets for the relative OLED trend. The app-server is polled about once per minute; retries use bounded exponential backoff. A failure in this worker does not stop the separate system telemetry loop.
+The companion starts `codex app-server` as a child process and exchanges JSON-RPC messages through standard input/output. It requests token usage and rate limits, selects the Codex limit snapshot, derives daily counts/streak summaries, and normalizes seven daily token buckets for the relative OLED trend. The app-server is polled about once per minute; retries use bounded exponential backoff. The reader queues only response objects and does not retain unsolicited notification or request messages. A failure in this worker does not stop the separate system telemetry loop.
 
 The App Server protocol and usage fields can evolve independently of QUARK. Missing, malformed, or unsupported values are rendered as `--` where the parser can safely continue.
 

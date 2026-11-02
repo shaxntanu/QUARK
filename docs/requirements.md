@@ -6,6 +6,10 @@ QUARK is a personal engineering prototype that puts selected Windows and Codex C
 
 This repository is a hybrid desktop-software and embedded-hardware project. It is not an internet-of-things service: the companion and ESP32 communicate locally over USB, although the Codex CLI can access OpenAI services. No scientific novelty or research contribution is claimed. No Sustainable Development Goal alignment is claimed.
 
+## Engineering problem and gap
+
+Windows system readings and Codex usage are separate sources with different interfaces and update behavior. QUARK connects those local sources to one selectable physical display and keeps system telemetry independent from Codex availability. The project addresses integration, serial robustness, and constrained OLED presentation for this specific setup. It does not claim that existing dashboards or device products are insufficient, and it has not compared QUARK with them.
+
 ## Users and use cases
 
 The intended user is a Windows developer who has the Codex CLI installed and signed in, and who can assemble or use the ESP32-C3 SuperMini carrier. Typical use is to check Codex token/allowance summaries or PC resource usage at a glance, with PC telemetry continuing even when Codex data is unavailable.
@@ -36,6 +40,9 @@ The intended user is a Windows developer who has the Codex CLI installed and sig
 | NFR-03 | Limit resource/API polling. | System interval is 2 seconds; Codex interval is 60 seconds with bounded retries. |
 | NFR-04 | Keep unavailable hardware metrics non-fatal. | Optional GPU, battery, and network-probe values use `--` or status markers. |
 | NFR-05 | Rebuild from documented, pinned direct Python dependencies. | Dependency pins and local Windows packaging build are recorded in [verification.md](verification.md). |
+| NFR-06 | Reject malformed or oversized serial input without silently changing its contents. | Strict ASCII decoding, command whitelist, firmware line bound, and malformed-input tests. |
+| NFR-07 | Keep only responses needed by pending Codex App Server calls in the response queue. | Response-envelope predicate and unit tests for responses, notifications, and server requests. |
+| NFR-08 | Provide a repeatable Windows verification command and check internal Markdown links and selected repository text rules. | `scripts/verify.ps1`, `scripts/check_docs.py`, and the CI documentation check. |
 
 ## Constraints and assumptions
 
@@ -51,5 +58,5 @@ The intended user is a Windows developer who has the Codex CLI installed and sig
 1. Keep every emitted serial packet within the 160-byte line limit; verified by regression tests.
 2. Build the Windows companion executable from the source; verified locally on Windows 11 with Python 3.12.10 and PyInstaller 6.22.3.
 3. Compile the ESP32-C3 firmware for the configured CDC-on-boot target; verified locally with Arduino core 3.3.10 and U8g2 2.36.19.
-4. Keep unit tests and compile checks runnable from a clean checkout; hosted GitHub Actions passed both jobs twice, including after pinning the firmware runner to Ubuntu 24.04.
+4. Keep unit tests, documentation checks, package build, and firmware compile runnable from a clean checkout; the Windows and firmware jobs have passed in hosted GitHub Actions.
 5. Preserve honest validation boundaries: no physical result is claimed without a fresh hardware test.

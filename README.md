@@ -38,6 +38,13 @@ The project is an engineering prototype and personal telemetry utility. It does 
 - [Traceability matrix](docs/traceability.md)
 - [Security notes](docs/security.md)
 - [Limitations](docs/limitations.md) and [roadmap proposals](docs/roadmap.md)
+- [Compatibility matrix](docs/compatibility.md)
+- [Failure analysis](docs/failure-analysis.md) and [assumptions](docs/assumptions.md)
+- [Hardware references](docs/hardware-references.md)
+- [Research sources](docs/research-sources.md)
+- [Engineering evidence](docs/engineering-evidence.md)
+- [Generated artifact provenance](docs/generated-artifacts.md)
+- [AI change audit](docs/AI_CHANGE_AUDIT.md) and [skills registry](docs/AI_SKILLS_REFERENCE.md)
 - [Decision records](docs/decisions/)
 - [Dependency inventory](docs/sbom.md)
 - [KiCad workflow research notes](docs/research-notes.md)
@@ -144,6 +151,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc .
 Run the canonical Windows verification workflow with Python 3.12:
 
 ```powershell
+py -3.12 -m pip install -r requirements.txt -r requirements-build.txt
 .\scripts\verify.ps1
 ```
 

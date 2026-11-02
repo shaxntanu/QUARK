@@ -5,9 +5,12 @@ Changes are grouped by repository source version. The current source identifies 
 ## Unreleased (1.2.0 source)
 
 - Bound telemetry records to the firmware's 160-byte serial-line limit and reject non-ASCII/control values.
+- Count CR bytes toward firmware line limits and reject malformed serial commands without lossy decoding.
+- Ignore unsolicited Codex App Server methods in the pending-response queue.
 - Added regression tests for full telemetry packets and seven-day trend normalization.
-- Added architecture, requirements, methodology, hardware, verification, security, traceability, and maintenance documentation.
-- Added local dependency pins and automated build/test configuration.
+- Added evidence, compatibility, failure-analysis, assumptions, hardware-reference, source, artifact, and AI workflow documentation.
+- Pin GitHub Actions to verified commit SHAs and add one-command Windows verification with a repository text checker.
+- Added local dependency pins and automated Windows package and firmware compile configuration.
 
 ## 1.1.0
 

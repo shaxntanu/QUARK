@@ -27,11 +27,11 @@ flowchart LR
   Button[Carrier page / refresh button] --> ESP
 ```
 
-The companion runs as a single Windows process, with separate Codex polling and serial/telemetry work. System metrics are sampled about every 2 seconds. Codex usage is polled about every 60 seconds, with retries and a bounded refresh cooldown. NVIDIA readings are optional. The application has no HTTP telemetry endpoint or remote QUARK service; the Codex CLI itself may communicate with OpenAI services.
+The companion runs as a single Windows process, with separate Codex polling and serial/telemetry work. System metrics are sampled about every 2 seconds. Codex usage is polled about every 60 seconds, with retries and a bounded refresh cooldown. The App Server reader queues only JSON-RPC responses that can satisfy a pending request; unsolicited notifications and server requests are ignored. NVIDIA readings are optional. The application has no HTTP telemetry endpoint or remote QUARK service; the Codex CLI itself may communicate with OpenAI services.
 
 ## Serial protocol
 
-The link is 115200 baud, newline-terminated printable ASCII. The complete line, including its newline, is limited to 160 bytes. The companion now omits lower-priority optional fields when necessary to keep a packet within that bound. `AI` and `SYS` records are parsed field-by-field by the firmware; malformed, oversized, or non-ASCII lines are discarded.
+The link is 115200 baud, newline-terminated printable ASCII. The complete line, including its newline, is limited to 160 bytes. The companion omits lower-priority optional fields when necessary to keep a packet within that bound. The firmware counts every byte before LF, including CR, and discards malformed, oversized, or non-ASCII lines. The companion also decodes commands strictly as ASCII and accepts only known command strings.
 
 | Direction | Message | Purpose |
 |---|---|---|

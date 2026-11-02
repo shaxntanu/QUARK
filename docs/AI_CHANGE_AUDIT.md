@@ -1,0 +1,14 @@
+# AI change audit
+
+This document records material automated changes made during the 2026-11-02 repository audit. It distinguishes code generation and review from actual validation evidence.
+
+| Workstream | Files | Reason | Research used | Validation | Remaining uncertainty |
+|---|---|---|---|---|---|
+| Serial and App Server input hardening | `QUARK.ino`, `quark.py`, `tests/test_quark.py` | Count all pre-LF bytes, including CR, against the firmware line bound; reject malformed ASCII instead of silently dropping bytes; keep only JSON-RPC responses in the response queue. | Official App Server interface documentation; repository protocol code. | 17 Python tests passed; firmware compile passed in hosted CI for the changed source. | No physical serial fault injection or live App Server session. |
+| CI supply-chain review | `.github/workflows/ci.yml`, `docs/security.md` | Pin each action to the upstream release commit and document permissions and scanner limits. | GitHub security guidance and upstream Git refs. | Commit SHAs resolved via GitHub API; hosted CI passed. | Pinned actions still require future review. Dependabot alerts are disabled for the repository. |
+| Golden verification workflow | `scripts/check_docs.py`, `scripts/verify.ps1`, `README.md`, CI workflow | Provide one Windows command for tests, compile, documentation/path checks, and executable packaging. | Existing build scripts and CI workflow. | Full local command passed on Windows 11 with Python 3.12.10; documentation checker also runs in CI. | Optional firmware compile needs Arduino CLI and packages installed. CAD checks remain separate. |
+| Engineering evidence and reproducibility records | `docs/research-sources.md`, `docs/hardware-references.md`, `docs/engineering-evidence.md`, `docs/compatibility.md`, `docs/failure-analysis.md`, `docs/assumptions.md`, `docs/generated-artifacts.md`, `docs/AI_SKILLS_REFERENCE.md` | Make source authority, unverified assumptions, artifact origin, and remaining failure risks inspectable. | Official OpenAI, KiCad, GitHub, Arduino, and Espressif references; Crawl4AI review of hardware workflow repositories. | Internal Markdown links, text paths, and the no-em-dash rule are checked by `scripts/check_docs.py`. | The exact purchased module MPNs are unknown; physical behavior remains unverified. |
+
+The audit did not use Firecrawl. Crawl4AI 0.9.5 ran in a temporary environment and was not added to project dependencies. Some source pages and a vendor PDF could not be retrieved; only successfully retrieved material informed changes. The system illustration predates this audit and is listed in [artifact provenance](generated-artifacts.md).
+
+No AI-generated result is presented as a physical measurement, manufacturing certification, performance benchmark, or live Codex integration test.

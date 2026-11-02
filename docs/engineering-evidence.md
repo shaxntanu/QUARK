@@ -1,0 +1,19 @@
+# Engineering evidence
+
+This ledger separates source review, automated checks, builds, and physical results. A successful source build does not verify the assembled device.
+
+| ID | Claim | Repository evidence | Validation and result | Confidence |
+|---|---|---|---|---|
+| E-01 | Complete serial lines are bounded at 160 bytes, including LF. | `quark.py` packet builders; `QUARK.ino` line collector; `tests/test_quark.py` | Python tests cover full packets and varied oversized input strings. ESP32-C3 compilation passed in hosted CI after the firmware change. | Build verified; physical link untested |
+| E-02 | The companion rejects malformed non-ASCII or control input instead of silently deleting bytes. | `parse_esp_command`, serial read paths, and command whitelist in `quark.py` | Unit tests reject non-ASCII characters, control bytes, embedded newlines, and unrecognized commands. | Unit verified; live serial injection untested |
+| E-03 | Unsolicited App Server notifications and requests do not accumulate in the response queue. | `_is_jsonrpc_response` and `CodexAppServer._stdout_reader` in `quark.py` | Unit tests distinguish responses, notifications, and server requests. No live App Server session was used. | Unit verified; integration untested |
+| E-04 | The Windows companion packages as a one-file executable. | `scripts/build_exe.ps1`, pinned requirements, and `quark.py` | `scripts/verify.ps1` completed on Windows 11 with Python 3.12.10 and PyInstaller 6.22.3. The output was 9,840,202 bytes. It was not launched in a separate user session. | Build verified |
+| E-05 | The firmware compiles for the configured ESP32-C3 target. | `QUARK.ino` and `.github/workflows/ci.yml` | Hosted CI run [41468741407](https://github.com/shaxntanu/QUARK/actions/runs/41468741407) passed after the protocol changes. A later run after action pinning also passed. | CI build verified; hardware untested |
+| E-06 | The checked-in schematic and PCB have no included ERC/DRC violations under the recorded setup. | KiCad files and [verification record](verification.md) | KiCad CLI 10.0.7 reported zero included ERC/DRC violations, zero unconnected items, and zero parity issues. Four ERC and seven DRC checks were ignored and are listed in the verification record. | CAD checked; not fabrication certification |
+| E-07 | CI actions use verified immutable commit references and the workflow token is read-only. | `.github/workflows/ci.yml` and [security notes](security.md) | Upstream tag refs were resolved through GitHub's repository API on 2026-11-02. CI run [41469042013](https://github.com/shaxntanu/QUARK/actions/runs/41469042013) passed with the pinned actions. | Source/configuration verified |
+| E-08 | Local Markdown links resolve and repository text does not contain em dashes or account-specific Windows profile paths. | `scripts/check_docs.py` | The checker is run by the canonical verification script and Windows CI. It does not check external links, Markdown anchors, or all generated binary content. | Automated repository text check |
+| E-09 | A fresh local Windows package build and all Python tests pass. | `scripts/verify.ps1` | On 2026-11-02, dependency check, 17 unit tests, bytecode compilation, documentation checks, and the executable build all completed successfully. | Local verified |
+| E-10 | Physical display, LEDs, buttons, switch, buzzer, power, and long-run behavior work as intended. | No new physical result is recorded in this audit. | No connected hardware or hardware-in-loop test was used. | Untested |
+| E-11 | Codex account usage remains accurate during live sessions and network interruptions. | Parser tests and App Server client source | No signed-in live session, internet interruption, or quota comparison was performed. | Untested |
+
+No latency, throughput, CPU, power, reliability, or user-study result is claimed. See [limitations](limitations.md) for the remaining validation gaps.
