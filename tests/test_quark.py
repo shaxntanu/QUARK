@@ -80,6 +80,17 @@ class CodexParsingTests(unittest.TestCase):
         self.assertEqual(quark.extract_today_tokens({"dailyUsageBuckets": []}, today), 0)
         self.assertIsNone(quark.extract_today_tokens({"dailyUsageBuckets": "invalid"}, today))
 
+    def test_daily_token_trend_normalizes_seven_local_days(self):
+        today = date(2026, 10, 28)
+        buckets = [
+            {"startDate": f"2026-10-{day}", "tokens": (day - 22) * 100}
+            for day in range(22, 29)
+        ]
+        self.assertEqual(
+            quark.extract_daily_token_trend({"dailyUsageBuckets": buckets}, today),
+            "0,17,33,50,67,83,100",
+        )
+
 
 class TelemetryTests(unittest.TestCase):
     def test_nvidia_smi_parses_sample_and_unavailable_values(self):
@@ -106,6 +117,54 @@ class TelemetryTests(unittest.TestCase):
         self.assertIn("TODAY=--", quark.format_ai_packet({"today": "bad|field"}))
         self.assertEqual(quark.parse_esp_command("REFRESH|SYS\r\n"), "REFRESH|SYS")
         self.assertIsNone(quark.parse_esp_command("untrusted random text"))
+
+    def test_full_codex_packet_stays_within_firmware_line_limit(self):
+        packet = quark.format_ai_packet({
+            "today": "999999999999",
+            "lifetime": "999999999999",
+            "five_remaining": "100",
+            "weekly_remaining": "100",
+            "five_reset": "999999d23h",
+            "weekly_reset": "999999d23h",
+            "peak_daily": "999999999999",
+            "current_streak": "9999",
+            "longest_streak": "9999",
+            "longest_turn": "999999d23h",
+            "daily_trend": "100,100,100,100,100,100,100",
+        })
+
+        self.assertLessEqual(len(packet.encode("ascii")) + 1, quark.SERIAL_MAX_LINE)
+        self.assertIn("LONGEST=999999d23h", packet)
+        self.assertNotIn("D7=", packet)
+
+    def test_full_system_packet_stays_within_firmware_line_limit(self):
+        packet = quark.format_system_packet({
+            "cpu": "100",
+            "gpu": "100",
+            "ram": "100",
+            "temp": "150",
+            "vram": "100",
+            "disk": "100",
+            "memory_free": "12345678",
+            "disk_free": "12345678",
+            "down": "12345678",
+            "up": "12345678",
+            "down_percent": "100",
+            "up_percent": "100",
+            "freq": "123456",
+            "uptime": "999999d23h",
+            "battery": "100",
+            "ac": "OFF",
+            "link": "NO",
+        })
+
+        self.assertLessEqual(len(packet.encode("ascii")) + 1, quark.SERIAL_MAX_LINE)
+        self.assertIn("AC=OFF", packet)
+        self.assertNotIn("WEB=", packet)
+
+    def test_protocol_values_reject_non_ascii_and_control_characters(self):
+        self.assertEqual(quark._protocol_value("é"), "--")
+        self.assertEqual(quark._protocol_value("two\nlines"), "--")
 
 
 if __name__ == "__main__":

@@ -289,18 +289,33 @@ def _protocol_value(value, max_length=24):
         return "--"
 
     text = str(value).strip()
-    if not text or any(character in text for character in "|\r\n"):
+    if not text or any(ord(character) < 32 or ord(character) > 126 for character in text):
+        return "--"
+    if "|" in text:
         return "--"
     return text[:max_length]
 
 
+def _bounded_packet(required_fields, optional_fields):
+    """Build an ASCII packet that fits the firmware limit including its newline."""
+    packet = "|".join(required_fields)
+    if len(packet.encode("ascii")) + 1 > SERIAL_MAX_LINE:
+        raise ValueError("Required serial fields exceed the firmware line limit")
+
+    for field in optional_fields:
+        candidate = f"{packet}|{field}"
+        if len(candidate.encode("ascii")) + 1 <= SERIAL_MAX_LINE:
+            packet = candidate
+    return packet
+
+
 def format_ai_packet(data):
     data = data if isinstance(data, Mapping) else {}
-    fields = [
+    required_fields = [
         f"AI|TODAY={_protocol_value(data.get('today'), 12)}",
         f"LIFE={_protocol_value(data.get('lifetime'), 12)}",
-        f"H5={_protocol_value(data.get('five_remaining'), 4)}",
-        f"WEEK={_protocol_value(data.get('weekly_remaining'), 4)}",
+        f"H5={_protocol_value(data.get('five_remaining'), 3)}",
+        f"WEEK={_protocol_value(data.get('weekly_remaining'), 3)}",
         f"H5R={_protocol_value(data.get('five_reset'), 12)}",
         f"WR={_protocol_value(data.get('weekly_reset'), 12)}",
     ]
@@ -311,16 +326,17 @@ def format_ai_packet(data):
         ("LONGEST", "longest_turn", 12),
         ("D7", "daily_trend", 48),
     )
+    encoded_optional_fields = []
     for field, key, limit in optional_fields:
         value = _protocol_value(data.get(key), limit)
         if key in data:
-            fields.append(f"{field}={value}")
-    return "|".join(fields)
+            encoded_optional_fields.append(f"{field}={value}")
+    return _bounded_packet(required_fields, encoded_optional_fields)
 
 
 def format_system_packet(data):
     data = data if isinstance(data, Mapping) else {}
-    fields = [
+    required_fields = [
         f"SYS|CPU={_protocol_value(data.get('cpu'), 4)}",
         f"GPU={_protocol_value(data.get('gpu'), 4)}",
         f"RAM={_protocol_value(data.get('ram'), 4)}",
@@ -341,11 +357,12 @@ def format_system_packet(data):
         ("AC", "ac", 4),
         ("WEB", "link", 4),
     )
+    encoded_optional_fields = []
     for field, key, limit in optional_fields:
         value = _protocol_value(data.get(key), limit)
         if key in data:
-            fields.append(f"{field}={value}")
-    return "|".join(fields)
+            encoded_optional_fields.append(f"{field}={value}")
+    return _bounded_packet(required_fields, encoded_optional_fields)
 
 
 def parse_esp_command(line):
