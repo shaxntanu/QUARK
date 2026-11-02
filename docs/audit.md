@@ -1,4 +1,4 @@
-# Repository audit — 2026-11-02
+# Repository audit: 2026-11-02
 
 ## Overview
 

@@ -4,15 +4,15 @@ KiCad source for a two-layer carrier board that connects QUARK's ESP32-C3 SuperM
 
 ## Design files
 
-- `QUARK_SuperMini_Carrier.kicad_pro` — KiCad project.
-- `QUARK_SuperMini_Carrier.kicad_sch` — schematic.
-- `QUARK_SuperMini_Carrier.kicad_pcb` — routed PCB.
-- `QUARK.kicad_sym`, `QUARK.pretty/`, and the library tables — project-local symbol and footprint libraries.
-- `BOM.csv` — board and off-board parts.
-- `firmware/QUARK_ESP32-C3_SuperMini_CDC.bin` — merged 4 MB ESP32-C3 flash image with USB CDC on boot enabled.
-- `fabrication/` — Gerbers, Excellon drill files, and drill maps.
-- `preview/` — schematic and board preview images.
-- `scripts/generate_schematic.py` and `scripts/generate_board.py` — source generators.
+- `QUARK_SuperMini_Carrier.kicad_pro`: KiCad project.
+- `QUARK_SuperMini_Carrier.kicad_sch`: schematic.
+- `QUARK_SuperMini_Carrier.kicad_pcb`: routed PCB.
+- `QUARK.kicad_sym`, `QUARK.pretty/`, and the library tables: project-local symbol and footprint libraries.
+- `BOM.csv`: board and off-board parts.
+- `firmware/QUARK_ESP32-C3_SuperMini_CDC.bin`: merged 4 MB ESP32-C3 flash image with USB CDC on boot enabled.
+- `fabrication/`: Gerbers, Excellon drill files, and drill maps.
+- `preview/`: schematic and board preview images.
+- `scripts/generate_schematic.py` and `scripts/generate_board.py`: source generators.
 
 ## Board and module fit
 
@@ -27,8 +27,8 @@ All board connectors use 2.54 mm pitch. Connector pin 1 is identified on the sil
 | J1 | GND, 3V3, SCL, SDA | External 128×64 OLED; SCL is GPIO1 and SDA is GPIO0. |
 | J2 | AI, COM, SYS OPEN | SPDT mode switch: connect COM to AI/GND for AI mode; leave COM open for System mode (`INPUT_PULLUP`). |
 | J3 | GPIO5, GND | Passive piezo disc only; plays startup/control tones and the new-connection acknowledgement. |
-| SW1 | — | Page/refresh button from GPIO3 to GND. |
-| D1, D2 | — | Red and blue active-high status LEDs, each with a 330 Ω series resistor. |
+| SW1 | N/A | Page/refresh button from GPIO3 to GND. |
+| D1, D2 | N/A | Red and blue active-high status LEDs, each with a 330 Ω series resistor. |
 
 The OLED module and mode switch are off-board. J1–J3 are plated header footprints; install pin headers or solder leads as needed. Do not connect a high-current magnetic buzzer directly to GPIO5. The ESP32-C3 SuperMini provides the USB interface and board-level power regulation.
 
